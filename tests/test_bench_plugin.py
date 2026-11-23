@@ -260,6 +260,32 @@ def test_profile_takes_no_code_and_sends_the_library_finalize_built_with_its_scr
     assert (calls[1][1]["tool"], calls[1][1]["threads"], calls[1][1]["size"]) == ("none", 24, "S")
 
 
+def test_profile_offers_ranks_on_a_distributed_task_only_and_sends_them_to_the_judge(
+    loaded: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bench's own ``profile`` drops ``ranks`` (bench B2), so an agent could never see ``mpi_time_us``."""
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def judge(route: str, body: dict[str, object]) -> dict[str, object]:
+        calls.append((route, body))
+        return {"result": {"library": "/shared/lib.so", "workspace_bytes": "0"}, "runs": []}
+
+    monkeypatch.setattr(http_json, "post_judge", judge)
+    packet = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)}
+    distributed = {**packet, http_json.REQUEST_ACTIONS_ENV: json.dumps({"operations": ["distribute"]})}
+    single = registry.served(registry.Setup.read(packet))["profile"]
+    sut = registry.served(registry.Setup.read(distributed))["profile"]
+
+    sut.run({"ranks": [1, 2]})
+    sut.run({})
+    refused = sut.run({"ranks": []})
+
+    assert "ranks" not in single.input_schema["properties"]
+    assert "ranks" in sut.input_schema["properties"] and refused["ok"] is False, refused
+    profiled = [body for route, body in calls if route == "/profile"]
+    assert len(profiled) == 2 and profiled[0]["ranks"] == [1, 2] and "ranks" not in profiled[1]
+
+
 def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: None) -> None:
     from hpcagent_bench_plugins.nestforge.wire import TOOLS
 

@@ -123,16 +123,34 @@ PROFILE = (
     "Finalize the program as your moves left it and show where that library's time goes. Takes no code; never scored."
 )
 
+#: The bench's agent-side ``profile`` does not offer the judge's ``ranks`` (bench B2), so the plugin adds it.
+RANKS = pydantic.Field(
+    None,
+    min_length=1,
+    description="Distributed task only: run the program at each of these rank counts as a grade runs it, never "
+    "scored. Each run reports time_us (the timed bracket on the slowest rank), mpi_time_us (the time inside MPI calls "
+    "on that rank: what an overlap of communication and compute reduces) and whether the outputs are correct. "
+    "No instrument runs with it.",
+)
+
 
 def profile_spec(setup: Setup) -> Spec:
     """The bench's ``profile`` on ``setup`` with its instruments only: the library comes from the session."""
     offered = profile_tool.profile_input(setup).model_fields
     code = {*http_json.SubmissionInput.model_fields, "language", "requests"}
     fields: dict[str, Any] = {name: (field.annotation, field) for name, field in offered.items() if name not in code}
+    if setup.request_actions.distributed and "ranks" not in fields:
+        fields["ranks"] = (list[pydantic.PositiveInt] | None, RANKS)
     args = pydantic.create_model("ProfileArgs", __config__=pydantic.ConfigDict(extra="forbid"), **fields)
     return Spec(PROFILE, args, f"- `profile` -- {PROFILE}", HINTS[Effect.READ])
 
 
-tool(spec=profile_spec, name="profile", preview=True, overrides=True)(
-    rendered(delivering(profile_tool.run), profile_answer)
-)
+def profile_run(payload: dict[str, Any]) -> dict[str, Any]:
+    """The bench's ``/profile`` body, with ``ranks`` when the agent sent it."""
+    body = profile_tool.profile_body(payload)
+    if payload.get("ranks"):
+        body["ranks"] = payload["ranks"]
+    return http_json.post_judge("/profile", body)
+
+
+tool(spec=profile_spec, name="profile", preview=True, overrides=True)(rendered(delivering(profile_run), profile_answer))

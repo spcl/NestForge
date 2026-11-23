@@ -19,6 +19,7 @@ import pathlib
 from collections import defaultdict
 from typing import Any
 
+from nestforge.plugin_record import REISSUING_SCHEMAS, SCHEMA
 from nestforge.server import FEEDBACK_CODEGEN, Setup, answer, applied, start
 from nestforge.session import Session
 from nestforge.stages.families import family_of
@@ -36,8 +37,8 @@ def journal_from_file(path: pathlib.Path) -> list[list[Any]]:
     return [json.loads(line) for line in path.read_text("utf-8").splitlines() if line.strip()]
 
 
-def journal_from_db(db: pathlib.Path, setup: str, episode: str, kernel: str) -> list[list[Any]]:
-    """The journal the episode's newest plugin record holds."""
+def journal_from_db(db: pathlib.Path, setup: str, episode: str, kernel: str) -> tuple[list[list[Any]], int]:
+    """The journal the episode's newest plugin record holds, and the record's schema version."""
     # deferred: only this way of reading needs the bench's statistics
     from hpcagent_bench.stats import plugin_records
 
@@ -49,7 +50,7 @@ def journal_from_db(db: pathlib.Path, setup: str, episode: str, kernel: str) -> 
         raise SystemExit(f"the record of {episode} is not of kernel {kernel}")
     journal = data["journal"]
     assert isinstance(journal, list), "a record's journal is a list"
-    return [list(call) for call in journal if isinstance(call, list)]
+    return [list(call) for call in journal if isinstance(call, list)], kept[-1].record.schema_version
 
 
 def measured(session: Session, data: tuple[dict[str, Any], Reference | None], repeats: int) -> tuple[float, float]:
@@ -107,12 +108,20 @@ def main() -> None:
     parser.add_argument("--gpu", action="store_true", help="the episode ran on the GPU")
     parser.add_argument("--repeats", type=int, default=2, help="measurements per prefix; their spread is the noise")
     parser.add_argument("--out", type=pathlib.Path, required=True, help="the JSON to write")
+    parser.add_argument(
+        "--schema",
+        type=int,
+        default=SCHEMA,
+        help="with --journal: the plugin-record version the journal was written under (1 before 2026-11-23)",
+    )
     args = parser.parse_args()
     if args.journal is not None:
-        journal = journal_from_file(args.journal)
+        journal, schema = journal_from_file(args.journal), args.schema
     else:
-        journal = journal_from_db(args.db, args.setup, args.episode, args.kernel)
+        journal, schema = journal_from_db(args.db, args.setup, args.episode, args.kernel)
     session, inputs, reference = start(Setup(args.kernel, args.preset, args.datatype, args.gpu), codegen="first")
+    # a version-1 journal names the labels rewind handed out again
+    session.reissue_dropped_labels = schema in REISSUING_SCHEMAS
     result = attribute(session, (inputs, reference), journal, args.repeats)
     args.out.write_text(json.dumps({"kernel": args.kernel, "preset": args.preset, **result}, indent=2), "utf-8")
     print(f"{result['replayed']} of {len(journal)} calls replayed -> {args.out}")

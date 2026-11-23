@@ -55,7 +55,7 @@ from nestforge.ir.introspect import (
     tree_rows,
 )
 from nestforge.ir.loops import loop_symbol_values
-from nestforge.ir.names import Namer, inline_top_level_nsdfgs, normalize_labels
+from nestforge.ir.names import ROW_NAME, Namer, inline_top_level_nsdfgs, normalize_labels
 from nestforge.ir.subtree import changed_view, subtree
 from nestforge.records import (
     CRASHES,
@@ -93,7 +93,7 @@ from nestforge.stages.canonicalize import (
 )
 from nestforge.stages.expand import implementations, in_doall, set_default_implementations, settle
 from nestforge.stages.families import DEFAULT_MOVES_FAMILY, WAVEFRONT_FAMILY, checked_families, switched_off
-from nestforge.stages.feedback import Evidence
+from nestforge.stages.feedback import Evidence, Origin
 from nestforge.stages.finalize import BenchTarget, Final, assemble
 from nestforge.stages.kernel import (
     DEVICE_UNIT_SUFFIX,
@@ -498,6 +498,17 @@ def illegal(kind: str, labels: tuple[str, ...], reason: str, status: MoveStatus 
     return MoveResult(status=status, kind=kind, labels=labels, reason=reason)
 
 
+def row_kind(obj: object) -> str:
+    """What a tree row is, in the words of a hint: a kernel, an opaque library call (its node type), a map or a loop."""
+    if isinstance(obj, ExternalCall):
+        return "kernel"
+    if isinstance(obj, nodes.LibraryNode):
+        return f"opaque library call ({type(obj).__name__})"
+    if isinstance(obj, nodes.MapEntry):
+        return "map"
+    return "loop" if isinstance(obj, LoopRegion) else "block"
+
+
 class Move(Record):
     """A legal move, exactly as :meth:`Session.apply_move` takes it back."""
 
@@ -768,6 +779,8 @@ class Session:
 
     __slots__ = (
         "shown",
+        "shown_options",
+        "reissue_dropped_labels",
         "applied",
         "shared_root",
         "sdfg",
@@ -872,6 +885,12 @@ class Session:
         self.expanded: dict[str, bool] = {}
         # the tree the agent last read whole, which a move's answer brings up to date with the subtree it rewrote
         self.shown: str | None = None
+        #: How :attr:`shown` was printed (``bodies``, ``deps``), so a move answers in the same print; never with costs,
+        #: which take up to a minute per tree (a tree read with them is answered whole once).
+        self.shown_options: tuple[bool, bool] = (False, False)
+        #: Replaying a journal of plugin-record version 1, written when ``rewind`` reset the namer and so handed a
+        #: dropped label out again (``plugin_record.REISSUING_SCHEMAS``); never set for a live session.
+        self.reissue_dropped_labels = False
         # labels whose leaf bodies describe() prints in another language than the row around them, kept while they live
         self.languages: dict[str, Language] = {}
         self.costs: WorkDepth | None = None
@@ -975,11 +994,19 @@ class Session:
         )
 
     def restore(self, saved: Checkpoint) -> None:
-        """Make ``saved`` the session's program again."""
-        self.sdfg, self.unplaced, self.namer = saved.sdfg, saved.unplaced, saved.namer
+        """Make ``saved`` the session's program again, its namer as it was: a crashed move or a refused batch is not
+        journaled and the agent never read what it named, so a session rebuilt from the journal names the next rows
+        as this one does (:meth:`undo` and :meth:`rewind` keep labels growing). What the agent opened or set a
+        language for stays where its row is still there."""
+        viewed, languages = self.expanded, self.languages
+        live = tree_rows(saved.sdfg).keys()
+        self.namer = saved.namer
+        self.sdfg, self.unplaced = saved.sdfg, saved.unplaced
         self.unscoped = saved.unscoped
         self.unlaid, self.layout = saved.unlaid, saved.layout
-        self.applied, self.expanded, self.languages = saved.applied, saved.expanded, saved.languages
+        self.applied = saved.applied
+        self.expanded = {**saved.expanded, **{label: shown for label, shown in viewed.items() if label in live}}
+        self.languages = {**saved.languages, **{label: lang for label, lang in languages.items() if label in live}}
         self.costs, self.costs_skipped = saved.costs, saved.costs_skipped
         # the rows and the kernel graph hold nodes of the program just dropped
         self.rows, self.kernel_deps = None, None
@@ -989,6 +1016,17 @@ class Session:
         self.kernel_modes = saved.kernel_modes
         self.pipeline = saved.pipeline
         self.persistent = saved.persistent
+
+    def namer_back(self, kept: Namer, live: Iterable[str]) -> Namer:
+        """The namer for the program ``kept`` named, back in place of this one: ``kept``'s names, but no counter lower
+        than this one's and every label retired since retired still, unless its row (one of ``live``) is back. So a
+        label the agent read is never handed out again. A version-1 journal's replay takes ``kept`` as it is."""
+        if self.reissue_dropped_labels:
+            return copy.deepcopy(kept)
+        handed = self.namer
+        counters = {kind: max(n, handed.counters.get(kind, 0)) for kind, n in kept.counters.items()}
+        counters |= {kind: n for kind, n in handed.counters.items() if kind not in counters}
+        return Namer(counters, kept.retired | (handed.retired - set(live)))
 
     def remember(self) -> None:
         """Keep the program as it was before the change :meth:`atomic` is running, for :meth:`undo`; the last
@@ -1066,18 +1104,43 @@ class Session:
     def bump(self, consumed: Sequence[str] = ()) -> None:
         """After a change to the program: retire the labels of the rows it ``consumed`` and name its new rows."""
         self.namer.retire(tuple(consumed))
+        issued = dict(self.namer.counters)
         normalize_labels(self.sdfg, self.namer)
         set_default_implementations(self.sdfg, self.targets)
         # placement decides a kernel's device: pinned to the host stack now, a GPU kernel's arrays would stay there
         force_register_arrays(self.sdfg, kernels=not self.targets.gpu)
         self.rows = None
+        opened = any(self.expanded.get(label) for label in consumed)
+        spoken = {self.languages[label] for label in consumed if label in self.languages}
         self.expanded = {label: is_open for label, is_open in self.expanded.items() if label in self.row_index()}
         self.languages = {label: lang for label, lang in self.languages.items() if label in self.row_index()}
+        self.inherit_view(issued, opened, spoken.pop() if len(spoken) == 1 else None)
         self.costs = None
         self.costs_skipped = None
         self.kernel_deps = None
         self.sources, self.builds, self.prepared = {}, {}, {}
         self.measured = None
+
+    def inherit_view(self, issued: Mapping[str, int], opened: bool, language: Language | None) -> None:
+        """Give the rows a change made in place of the rows it consumed those rows' view: open when one of them was
+        expanded, and their language when they shared one. A new row is one named after ``issued`` (the counters
+        before the change); only the outermost new rows take the view, the rows inside them follow it."""
+        if not opened and language is None:
+            return
+        rows = self.row_index()
+        fresh = set()
+        for label in rows:
+            match = ROW_NAME.match(label)
+            if match is not None and int(match["index"]) >= issued.get(match["kind"], 0):
+                fresh.add(label)
+        for label in fresh:
+            obj, state = rows[label]
+            if any(row in fresh for row in enclosing_rows(obj, state)):
+                continue
+            if opened and isinstance(obj, (SDFGState, nodes.MapEntry)) and not self.is_open(label):
+                self.expanded[label] = True
+            if language is not None:
+                self.languages.setdefault(label, language)
 
     def row_index(self) -> dict[str, Row]:
         """Tree label -> ``(block or node, state)``, built once per change of the program."""
@@ -1168,7 +1231,8 @@ class Session:
 
     def expand(self, labels: Sequence[str]) -> str:
         """Show everything below the states and maps ``labels`` name (kernels, nested maps and leaf bodies, a map's
-        nested states, all opened) until the program changes; returns what opened, or why nothing did."""
+        nested states, all opened) while the row lives: a move inside it keeps it open, and the rows a move makes in
+        place of an open row open with them (:meth:`inherit_view`); returns what opened, or why nothing did."""
         rows = self.named_rows("expand", tuple(labels))
         if isinstance(rows, MoveResult):
             return f"{spelled(rows.status)}: {rows.reason}"
@@ -1208,7 +1272,7 @@ class Session:
         notes += [self.set_language(labels, lang) for labels, lang in ((c, C), (python, PYTHON)) if labels]
         tree = self.describe()
         if root is None:
-            self.shown = tree
+            self.shown, self.shown_options = tree, (False, False)
             return "\n".join([*notes, tree])
         part = subtree(tree, root)
         return "\n".join([*notes, part if part is not None else f"not-found: no row is labeled {root}."])
@@ -1216,12 +1280,14 @@ class Session:
     def cpf(self, bodies: bool = False, deps: bool = False, costs: bool = False) -> str:
         """:meth:`describe`, as the agent reads it whole: a later move answers with what it rewrote of this tree."""
         self.shown = self.describe(bodies=bodies, deps=deps, costs=costs)
+        self.shown_options = bodies, deps
         return self.shown
 
     def changed_tree(self) -> str:
         """What changed in the tree since the agent last read it: the rewritten subtree under the rows around it, or
         the whole tree; the agent holds the new tree after it."""
-        tree = self.describe()
+        bodies, deps = self.shown_options
+        tree = self.describe(bodies=bodies, deps=deps)
         text = changed_view(self.shown, tree)
         self.shown = tree
         return text
@@ -2237,9 +2303,11 @@ class Session:
         nothing."""
         if self.unscoped is not None:
             # a copy: a failure puts the kept program back through :meth:`atomic`
-            self.sdfg, self.namer, self.applied = copy.deepcopy(self.unscoped)
+            sdfg, kept, applied = copy.deepcopy(self.unscoped)
+            self.namer = self.namer_back(kept, tree_rows(sdfg).keys())
+            self.sdfg, self.applied = sdfg, applied
             self.unscoped, self.unplaced, self.focus = None, None, None
-            # the kernels are gone, and their names and labels are handed out again
+            # the kernels are gone; a kernel's name comes from its row's label, which is back
             self.gpu_choices = {}
             self.bump()
         return self.describe()
@@ -2813,6 +2881,24 @@ class Session:
 
     # Stage 7: feedback
 
+    def last_change(self) -> str:
+        """The change applied last, as a hint names it (``<kind> on <labels>``); empty before any."""
+        if not self.applied:
+            return ""
+        done = self.applied[-1]
+        return f"{done.kind} on {', '.join(done.labels)}" if done.labels else done.kind
+
+    def origins(self) -> dict[str, Origin]:
+        """Every row of the program by label: what it is and the kinds of the moves offered on it (issue #88)."""
+        offered: dict[str, set[str]] = {}
+        for move in self.list_moves():
+            for label in move.labels:
+                offered.setdefault(label, set()).add(move.kind)
+        return {
+            label: Origin(label, row_kind(obj), tuple(sorted(offered.get(label, set()))))
+            for label, (obj, _) in self.row_index().items()
+        }
+
     def feedback(self, reps: int = TIMED_REPS) -> str:
         """A few lines of hints for the next round, most important first, from every kernel's current library:
         its validation and time, and the compiler's vectorizer or register remarks."""
@@ -2915,18 +3001,27 @@ class Session:
         if cached is not None and cached[0] is inputs and cached[1] is reference and cached[2:4] == (reps, codegen):
             return cached[4]
         with self.stopper.armed():
+            origins = self.origins()  # the rows as the agent sees them, before the trial cuts them into kernels
             trial = self.trial()
             trial.codegen = codegen
             try:
-                measured = trial.measure(inputs, reference, reps)
+                measured = trial.measure(inputs, reference, reps, origins, self.last_change())
             finally:
                 # the trial's builds are measured; a long session would otherwise keep every one until it exits
                 shutil.rmtree(trial.work_dir, ignore_errors=True)
         self.measured = inputs, reference, reps, codegen, measured
         return measured
 
-    def measure(self, inputs: dict[str, np.ndarray], reference: Reference | None, reps: int) -> Performance:
-        """The feedback of :meth:`performance` on this session, a self."""
+    def measure(
+        self,
+        inputs: dict[str, np.ndarray],
+        reference: Reference | None,
+        reps: int,
+        origins: Mapping[str, Origin] | None = None,
+        last: str = "",
+    ) -> Performance:
+        """The feedback of :meth:`performance` on this session, a self; ``origins`` are the rows the hints name
+        (:meth:`origins` of the session this is a trial of)."""
         if not external_calls(self.sdfg):
             self.default_scopes()
         # as finalize: placing a CPU program changes nothing but drops its kernels' builds
@@ -2950,5 +3045,5 @@ class Session:
             structured=program,
             offloading=offload_report(self.sdfg, devices, moves, self.sizes),
             kernels=kernel_reports(evidence, devices),
-            hints=feedback.report(evidence),
+            hints=feedback.report(evidence, origins, last=last),
         )

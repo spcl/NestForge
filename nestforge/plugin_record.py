@@ -9,7 +9,12 @@ from typing import Any
 
 #: The record's file name in the episode's ``plugin_records`` folder, and the schema version of its shape.
 PLUGIN = "nestforge"
-SCHEMA = 1
+#: 2 (2026-11-23): the same shape, but a journal's labels follow labels that only grow: after ``rewind`` a label the
+#: kernel phase handed out is never handed out again. A version-1 journal replays with
+#: ``Session.reissue_dropped_labels``.
+SCHEMA = 2
+#: The versions whose journals name labels as a rollback left them reissued.
+REISSUING_SCHEMAS = frozenset({1})
 
 
 def journal_entry(name: str, arguments: dict[str, Any]) -> list[object]:

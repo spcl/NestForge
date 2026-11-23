@@ -194,6 +194,13 @@ checks it.
 Stage 6 compiles each kernel's current source into variants, checks each against the oracle and keeps the fastest
 correct one. It is deterministic, never agent-driven.
 
+A kernel matches its oracle when its scaled difference is at most the FP rung's tolerance (`FP_RTOL`, at least
+one ULP of the narrowest output) plus the drift a reordered accumulation may carry, as the bench grades it
+(#106): `eps * sqrt(l)` from fp32 up, `eps / 2 * (ceil(log2 l) + 1)` below, with `l` the longest accumulation
+in the kernel (the ranges a reduction's written subset leaves out, or a library call's input dimensions no
+output keeps; `nestforge/stages/kernel.py`, `reassociation_growth`). The same gate serves the sweep,
+`write-kernel` and the hints.
+
 - **CPU.** Compiler on PATH (GNU, LLVM, oneAPI) × FP mode (strict-ieee, contract-fma, fast-math) × vectorizer cost
   model.
 - **GPU.** Every nvcc on PATH × FP mode (strict-ieee, contract-fma), all with `-arch=native`.
@@ -218,10 +225,11 @@ compiler remarks from one extra compile of the current variant (`-fopt-info-vec-
 | build or run failed | fix the kernel |
 | wrong result | check bounds, races, reduction order |
 | kernel is half the kernel time or more | optimize it first |
+| kernel cut from a tree row (`performance` only) | `<label> is <share> of kernel time, <kind>; moves offered on it: <kinds>` (issue #88) |
 | registers spilled | loop body too big, try fission |
 | loop not vectorized | the reason, mapped to a move (fission, interchange, hoisting an `if`, `__restrict__`) |
 
-Failures rank first; the report keeps at most eight hints.
+Failures rank first, and within a rule the larger share comes first; the report keeps at most eight hints.
 
 `performance(inputs, reference)` gives every phase's feedback in one record, on a copy completed with the default
 scopes and placement; kernels keep the libraries already linked, the rest get the default build. A served session

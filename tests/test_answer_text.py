@@ -213,6 +213,26 @@ def test_a_profile_keeps_its_report_text_and_drops_the_structured_copy(answers: 
     assert answers.profile_answer(without_text) is without_text
 
 
+def test_a_profile_at_ranks_is_one_row_per_rank_count_with_the_time_inside_mpi(answers: ModuleType) -> None:
+    run = {"time_us": 812.5, "mpi_time_us": 140.25, "correct": True, "mismatched": [], "error": ""}
+    unfinished: dict[str, object] = {
+        "ranks": 4,
+        "time_us": None,
+        "mpi_time_us": None,
+        "correct": None,
+        "mismatched": [],
+        "error": "oom",
+    }
+    report = {"build_ok": True, "kernel": "jacobi_2d", "preset": "S", "runs": [{"ranks": 2, **run}, unfinished]}
+    text = answers.profile_answer(report)["text"]
+    shared, rows = table_under(text, "runs")
+    assert pairs(text.splitlines()[0]) == {"build_ok": "true", "preset": "S"}
+    assert [row["ranks"] for row in rows] == ["2", "4"]
+    mpi_name, mpi_text = answers.measured("mpi_time_us", 140.25)
+    assert mpi_name == "mpi_time" and rows[0][mpi_name] == mpi_text, rows
+    assert rows[1]["error"] == "oom" and rows[1][mpi_name] == "-", rows
+
+
 def test_a_failed_measurement_reaches_the_agent_as_it_came(answers: ModuleType) -> None:
     timed_out = {"ok": False, "timed_out": True, "error": "The judge did not answer within 1800s"}
     assert answers.score_answer(timed_out) is timed_out

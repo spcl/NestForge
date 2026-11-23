@@ -293,16 +293,18 @@ def performance_answer(answer: dict[str, Any]) -> dict[str, Any]:
 
 def profile_answer(answer: dict[str, Any]) -> dict[str, Any]:
     """``profile``'s report: the scalar fields beside it on one line, then its own ``text``. The structured copy of
-    the same data (counters, call graph, hotspots) and the kernel's name go; an answer without a text comes as it
-    came."""
-    if failed(answer) or not isinstance(answer.get("text"), str):
+    the same data (counters, call graph, hotspots) and the kernel's name go. A run at ``ranks`` has no text: its runs
+    come as a table, one row per rank count. Any other answer without a text comes as it came."""
+    runs = answer.get("runs")
+    if failed(answer) or not (isinstance(answer.get("text"), str) or isinstance(runs, list)):
         return answer
     scalars = {
         name: value
         for name, value in answer.items()
         if name != "text" and name not in GIVEN and not isinstance(value, (dict, list))
     }
-    return {"text": "\n".join([*fields(scalars), answer["text"]])}
+    body = table("runs", runs, ("ranks",)) if isinstance(runs, list) else [answer["text"]]
+    return {"text": "\n".join([*fields(scalars), *body])}
 
 
 def record_of(answer: Mapping[str, Any], own: str) -> dict[str, Any] | None:

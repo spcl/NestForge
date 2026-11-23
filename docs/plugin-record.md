@@ -14,7 +14,13 @@ bench's `plugin_api.keep_record` into the episode's folder, as `plugin_records/n
 always follows a `finalize`, and the bench archives the file with each `/submit` grade, so the record of a grade holds
 the episode up to that grade.
 
-Schema version 1:
+Schema version 2 (2026-11-23), the shape of version 1 below. Only the labels a journal names differ: from
+version 2 a label the kernel phase handed out is never handed out again after `rewind`, while a version-1
+journal names the labels `rewind` reset the namer to hand out again. `scripts/attribute_moves.py` replays a version-1 journal with
+`Session.reissue_dropped_labels` (from a results DB the version comes with the record; a journal file takes
+`--schema 1`). `scripts/run_statistics.py` reads both.
+
+The shape:
 
 ```json
 {

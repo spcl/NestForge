@@ -394,13 +394,14 @@ The refusal of a `lib-after` on a wait names the statement that stops it (12.1),
 DaCe's `dace.libraries.comm.schedule.overlap_communication` stays the reference for the rules and the source of
 further fixtures; NestForge does not call it (a schedule tree round trip renames rows).
 
-#### 12.4 Time per communication row
+#### 12.4 Time inside communication (owner 2026-11-23: B2's total, no per-row times)
 
-`Performance` gains `comm_rows: list[CommRowReport]` with, per row, its label, its class, and its time on the slowest
-rank. The time of a `WAIT` row is the time the program stood waiting, which is the number an overlap reduces. The
-times come from DaCe's timer instrumentation on the communication rows of the trial copy, one report per rank,
-reduced with the maximum by the bench's driver. Collecting a report per rank is part of
-[bench request B2](bench-requests.md).
+The number an overlap reduces is the time the slowest rank spends inside MPI calls. Bench request B2 measures it:
+`/profile` with `ranks` runs the program at each rank count as a grade runs it and reports, per count, `time_us`
+(the timed bracket on the slowest rank) and `mpi_time_us` (time inside MPI calls on that rank, from a PMPI shim).
+The bench's own agent-side `profile` does not offer `ranks`, so NestForge's `profile` adds it on a distributed task
+and shows one row per rank count. `Performance` stays a single-node measurement: it runs in the judge's process
+without MPI. Times per communication row (DaCe timer instrumentation per row) wait until an agent needs them.
 
 #### 12.5 Who calls the overlap
 
@@ -421,7 +422,8 @@ agent calls the move and the splits.
    fixture, `lib-after` on the wait is refused before the splits (reason names the subset) and legal after them.
 7. After the overlap sequence, the four invariants of section 4 hold.
 8. At 1, 2, and 4 ranks the overlapped program is correct, and one `rollback` restores the program's hash.
-9. The `WAIT` row's reported time drops after the overlap on the halo fixture at 2 ranks (marker `mpi`).
+9. On a distributed task, `profile` offers `ranks`, sends them to the judge, and shows one row per rank count with
+   `mpi_time_us`; a single-node task offers no `ranks`.
 
 #### 12.7 Work packages
 
@@ -431,7 +433,7 @@ agent calls the move and the splits.
 | 12 | `split-doall` | `stages/moves.py`, `docs/stages.md`, `tests/test_split_doall.py` | none |
 | 13 | dropped (user 2026-11-22): `lib-after` on the wait does it, after 11 | | |
 | 14 | `split-blocking` | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_overlap.py` | none |
-| 15 | Time per communication row | `stages/performance.py`, `tests/test_comm_row_times.py` | 8, bench B2 |
+| 15 | Time inside communication (12.4): `ranks` on NestForge's `profile` | `plugin/nestforge/tools/nestforge.py`, `plugin/nestforge/answers.py`, `tests/test_bench_plugin.py`, `tests/test_answer_text.py` | 8, bench B2 |
 | 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 11, 12, 14 |
 | 17 | Relayout around an exchange (12.8): test on `redistribute`, fix refusals | `tests/test_comm_ranks.py` | none |
 | 18 | Slice views of communication buffers removed in canonicalization (`RemoveSliceView` on a view that only feeds a `CommNode`; user 2026-11-22), so R5 no longer pins `Isend`/`Irecv`/`Allreduce` on a slice; a view that cannot become a pointer (strided) stays and stays pinned | `stages/canonicalize.py`, `tests/test_comm_motion.py`, `tests/comm_rank_programs.py` | 5 |

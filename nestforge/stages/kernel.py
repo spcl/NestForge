@@ -110,10 +110,78 @@ class KernelVerdict:
     time_us: float
     error: str = ""
     unchecked: str = ""
+    #: The drift a reordered accumulation may carry (:func:`reassociation_growth`), added to the gate as the bench
+    #: grades (#106): a parallel or library reduction sums in another order than NumPy.
+    growth: float = 0.0
 
     @property
     def ok(self) -> bool:
-        return not self.error and not self.unchecked and self.md_rel <= rung_rtol(self.fp_mode, self.dtype_floor)
+        gate = rung_rtol(self.fp_mode, self.dtype_floor) + self.growth
+        return not self.error and not self.unchecked and self.md_rel <= gate
+
+
+def extent(expr: object, sizes: Mapping[str, object]) -> int:
+    """``expr`` at ``sizes`` as a count; 1 when it does not resolve, which adds no drift (the stricter side)."""
+    try:
+        value = dace.symbolic.evaluate(expr, dict(sizes))
+    except (TypeError, ValueError, KeyError, AttributeError):
+        return 1
+    try:
+        return max(int(value), 1)
+    except (TypeError, ValueError):
+        return 1
+
+
+def accumulation_length(sdfg: dace.SDFG, sizes: Mapping[str, object]) -> int:
+    """The longest accumulation in ``sdfg`` at ``sizes``, the bench's contracted extent ``l``: for a reduction (a
+    write-conflict edge out of a map) the product of the map's ranges its written subset does not mention, for a
+    library call the product of its inputs' dimensions no output keeps; 1 when there is none."""
+    longest = 1
+    for node, parent in sdfg.all_nodes_recursive():
+        if isinstance(node, nodes.MapExit) and isinstance(parent, dace.SDFGState):
+            entry = parent.entry_node(node)
+            for edge in parent.in_edges(node):
+                if edge.data.wcr is None:
+                    continue
+                written = {str(symbol) for symbol in edge.data.subset.free_symbols}
+                lengths = [
+                    extent(size, sizes)
+                    for param, size in zip(entry.map.params, entry.map.range.size(), strict=True)
+                    if param not in written
+                ]
+                longest = max(longest, math.prod(lengths))
+        elif isinstance(node, nodes.LibraryNode) and isinstance(parent, dace.SDFGState):
+            graph = parent.sdfg
+            kept = {
+                str(dim)
+                for edge in parent.out_edges(node)
+                if edge.data.data
+                for dim in graph.arrays[edge.data.data].shape
+            }
+            for edge in parent.in_edges(node):
+                if not edge.data.data:
+                    continue
+                dropped = [extent(dim, sizes) for dim in graph.arrays[edge.data.data].shape if str(dim) not in kept]
+                longest = max(longest, math.prod(dropped))
+    return longest
+
+
+def reassociation_growth(sdfg: dace.SDFG, outputs: Sequence[str], sizes: Mapping[str, object]) -> float:
+    """The relative drift an accumulation of :func:`accumulation_length` may carry in the narrowest float the
+    outputs hold, as the bench's ``precision.accumulation_growth`` gives it: ``eps * sqrt(l)`` from fp32 up (two
+    summation orders), ``eps / 2 * (ceil(log2 l) + 1)`` for a narrower format (a tree)."""
+    floats = [
+        np.finfo(sdfg.arrays[name].dtype.type)
+        for name in outputs
+        if name in sdfg.arrays and np.issubdtype(sdfg.arrays[name].dtype.type, np.inexact)
+    ]
+    length = accumulation_length(sdfg, sizes)
+    if not floats or length <= 1:
+        return 0.0
+    eps = float(max(info.eps for info in floats))
+    if eps <= float(np.finfo(np.float32).eps):
+        return eps * math.sqrt(length)
+    return eps / 2 * (math.ceil(math.log2(length)) + 1)
 
 
 def failed_verdict(fp_mode: str, error: str) -> KernelVerdict:
@@ -442,7 +510,10 @@ def measure_kernel(archive: Path, src: KernelSource, probe: Probe, reps: int, fp
     checked = measure(shared, src, probe.checked.inputs, probe.oracle, probe.checked.sizes, reps)
     if isinstance(checked, Failure):
         return failed_verdict(fp_mode, checked.error)
-    verdict = KernelVerdict(fp_mode, checked.maxdiff, checked.md_rel, checked.dtype_floor, checked.time_us)
+    growth = reassociation_growth(src.boundary.standalone_sdfg, src.boundary.outputs, probe.checked.sizes)
+    verdict = KernelVerdict(
+        fp_mode, checked.maxdiff, checked.md_rel, checked.dtype_floor, checked.time_us, growth=growth
+    )
     if probe.checked is probe.timed or not verdict.ok:
         return verdict
     timed = measure(shared, src, probe.timed.inputs, None, probe.timed.sizes, reps)
