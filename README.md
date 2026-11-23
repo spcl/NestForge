@@ -138,17 +138,17 @@ From a checkout of https://github.com/spcl/tactics:
 ```bash
 sudo bash scripts/setup_apt.sh                                          # compilers, libomp, BLAS, binutils (Ubuntu)
 export "$(bash scripts/setup_hptt.sh "$HOME/hptt" | tail -1)"          # HPTT for tensor transposes; sets HPTT_ROOT
-uv sync --group dev                                                     # dev tools and FP-Arena (dependency groups)
+uv sync --group dev                                                     # dev tools (a dependency group) and FP-Arena
 pre-commit install                                                      # ruff check, ruff format, headers
 pytest -m "not integration and not cloudsc and not gpu and not vendor"  # unit set, as CI runs it
 pytest -m integration                                                   # compiles and runs; bench OpenMP env (CI)
 pytest -m cloudsc                                                       # every phase on cloudsc_monolith vs the bench (CI)
 ```
 
-In a checkout, `[tool.uv.sources]` in `pyproject.toml` pins HPCAgent-Bench (`main`) and FP-Arena to commits;
-`python scripts/bump_deps.py [bench-branch]` moves the bench pin. DaCe extended (`dace-extended`) and dace-relayout come
-from PyPI, as in a pip install. Tactics is a user plugin of the bench (`plugin/tactics`, through `HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the
-bench never imports it, and the plugin keeps its registered name `nestforge` (packets, optimizers, records). Tactics
+In a checkout, `[tool.uv.sources]` in `pyproject.toml` pins HPCAgent-Bench (`main`) to a commit;
+`python scripts/bump_deps.py [bench-branch]` moves the bench pin. DaCe extended (`dace-extended`), dace-relayout and
+FP-Arena come from PyPI, as in a pip install. Tactics is a user plugin of the bench (`plugin/tactics`, through
+`HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the bench never imports it, and the plugin keeps its registered name `nestforge` (packets, optimizers, records). Tactics
 assumes Linux.
 A pip install of the bench does not ship the KernelBench submodule, so an ML kernel (`conv2d_*`) has no PyTorch
 reference and its outputs go unchecked (`correct: null`). Point `HPCAGENT_BENCH_ML_KERNELBENCH_DIR` at an

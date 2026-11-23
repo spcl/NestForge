@@ -40,6 +40,5 @@ uv sync --group dev
 ```
 
 The agent plugin (`plugin/tactics`) ships with the checkout, not the wheel: point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at
-it. The relayout move's SDFG cast needs FP-Arena, which is not on PyPI: a checkout installs it (`uv sync --group dev`, or
-`--group fparena` alone); the published metadata never names it.
+it. The relayout move's SDFG cast needs FP-Arena: `pip install "tactics[fparena]"`.
 Tactics requires Python 3.12 or newer and Linux.
