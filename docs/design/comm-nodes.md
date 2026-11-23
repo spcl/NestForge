@@ -3,7 +3,7 @@
 [Designs](README.md) · [Structure tree](../ir.md) · [Stages](../stages.md)
 
 Status: motion rules built (2026-11-19, `tactics/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
-the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused. The tree rows of section 2 are built (2026-11-23, `comm_line` in `tactics/ir/comm.py`, `tests/test_comm_tree.py`). The invariants of section 4 are built (2026-11-23, `Session.comm_refusal`, `tests/test_comm_invariants.py`); `isolate_communication` is not. The rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
+the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused. The tree rows of section 2 are built (2026-11-23, `comm_line` in `tactics/ir/comm.py`, `tests/test_comm_tree.py`). The invariants of section 4 are built (2026-11-23, `Session.comm_refusal`, `tests/test_comm_invariants.py`); `isolate_communication` is not. Section 5 is built (2026-11-23, `tests/test_comm_guards.py`): no row is a doall or joins a kernel, the default scopes cut at rows, `set_scope` refuses them, a kernel source may not call MPI, NCCL or RCCL, a program that communicates is placed on the CPU, and a row is not inlined and runs on MPI only. The rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
 HPCAgent-Bench `cc1124254`, and reviewed the same day against the code each section names.
 
 ## Goal

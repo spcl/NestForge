@@ -103,6 +103,10 @@ A program with communication rows keeps four invariants after every move (`Sessi
 3. **I3 isolation.** Every row other than a query keeps a state of its own, outside every doall.
 4. **I4 kernels.** No kernel holds a communication row.
 
+The kernel side keeps the rows out in the first place: the default scopes cut at them, `set_scope` refuses a
+selection that holds one, `write_kernel` refuses a source that calls MPI, NCCL or RCCL, and a program that
+communicates is placed on the CPU.
+
 ## Labels and names
 
 A label is `<kind><n>` (`for`, `while`, `if`, `state`, `doall`, `lib_<family>`): unique across the whole program, nested SDFGs

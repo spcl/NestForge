@@ -23,11 +23,19 @@ from functools import partial
 import dace
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls, in_conn, out_conn
 from dace.sdfg import nodes
-from dace.sdfg.state import AbstractControlFlowRegion, ConditionalBlock, ControlFlowBlock, LoopRegion, SDFGState
+from dace.sdfg.state import (
+    AbstractControlFlowRegion,
+    ConditionalBlock,
+    ControlFlowBlock,
+    ControlFlowRegion,
+    LoopRegion,
+    SDFGState,
+)
 from dace.transformation.passes.outline_to_external_calls import reference_sdfg
 from dace.utils import find_new_name
 
 from tactics.corpus.translate import prepare
+from tactics.ir.comm import comm_class
 from tactics.ir.dace_types import strings
 from tactics.ir.extract import (
     Boundary,
@@ -38,6 +46,7 @@ from tactics.ir.extract import (
 )
 from tactics.ir.introspect import Row
 from tactics.ir.names import in_order, is_call, top_level_doalls, top_level_map_entries
+from tactics.records import Refusal, Refused
 from tactics.stages.canonicalize import Targets
 from tactics.stages.moves import map_body, plan_subgraph_fission
 
@@ -226,10 +235,23 @@ def block_group(sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock]) -> Extract 
     return partial(extract_blocks, sdfg, order)
 
 
+def comm_rows_in(obj: nodes.Node | ControlFlowBlock) -> list[str]:
+    """The communication rows ``obj`` is or holds, queries included: none of them may join a kernel."""
+    if isinstance(obj, ControlFlowBlock):
+        return [str(n.label) for n, _ in obj.all_nodes_recursive() if comm_class(n) is not None]
+    return [str(obj.label)] if comm_class(obj) is not None else []
+
+
 def plan_scope(sdfg: dace.SDFG, rows: Sequence[Row]) -> Extract | str:
     """How to outline the regions ``rows`` name into one kernel, or why they cannot form one; changes nothing."""
     if not rows:
         return "name at least one map or block."
+    held = [label for obj, _ in rows for label in comm_rows_in(obj)]
+    if held:
+        return Refused(
+            f"communication stays outside kernels; scope the rows before and after {held[0]} apart.",
+            Refusal.WRONG_ROW_KIND,
+        )
     if all(isinstance(obj, nodes.MapEntry) or (state is not None and is_call(state, obj)) for obj, state in rows):
         extract = map_group(sdfg, rows)
     elif all(isinstance(obj, ControlFlowBlock) for obj, _ in rows):
@@ -317,15 +339,21 @@ def open_block(block: ControlFlowBlock) -> list[Row]:
     return [(block, None)]
 
 
-def default_units(sdfg: dace.SDFG) -> list[Row]:
+def default_units(sdfg: dace.SDFG | ControlFlowRegion) -> list[Row]:
     """The default scopes, in program order: top-level maps with their state, and blocks taken whole (state
-    ``None``)."""
+    ``None``). A block that holds a communication row is never taken whole: the scopes cut at the row, so the compute
+    between two exchanges forms its own kernels."""
     units: list[Row] = []
     for block in in_order(sdfg):
         if isinstance(block, SDFGState):
             units += [(entry, block) for entry in top_level_doalls(block) if is_parallel_nest(entry)]
-        else:
+        elif not comm_rows_in(block):
             units += block_units(block)
+        elif isinstance(block, ConditionalBlock):
+            for _, branch in block.branches:
+                units += default_units(branch)
+        elif isinstance(block, ControlFlowRegion):
+            units += default_units(block)
     return units
 
 

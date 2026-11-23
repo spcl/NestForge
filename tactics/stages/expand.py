@@ -13,6 +13,7 @@ import dace
 from dace import cpf_lowering
 from dace.codegen import cpf
 from dace.codegen.common import get_gpu_backend
+from dace.libraries.comm.nodes.node import CommNode
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.state import SDFGState
@@ -52,6 +53,8 @@ def implementations(node: nodes.LibraryNode, gpu: bool, inside_doall: bool = Fal
     """The implementations ``node`` may be set to: the ones a kernel unit renders (loops, the host vendor library,
     with a GPU target the device library of this machine's GPU) whose libraries this host has, besides its current
     one. Inside a doall (``inside_doall``), no device library call: each iteration cannot launch its own cuBLAS."""
+    if isinstance(node, CommNode):  # a communication row runs on MPI in this version
+        return tuple(i for i in ("MPI",) if i in node.implementations and i != node.implementation)
     name = type(node).__name__
     offered = (
         *cpf.VENDOR_IMPLEMENTATIONS_HOST,

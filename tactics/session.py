@@ -13,6 +13,7 @@ import atexit
 import contextlib
 import copy
 import dataclasses
+import re
 import shutil
 import tempfile
 import warnings
@@ -493,6 +494,10 @@ class MoveResult(Record):
         if refusal is Refusal.OTHER:
             warnings.warn(UnclassedRefusal(f"{data.get('kind')}: {data.get('reason')}"), stacklevel=2)
         return {**data, "refusal": refusal}
+
+
+#: An MPI, NCCL or RCCL call or header in a kernel source: communication stays in the program's own rows.
+COMMUNICATION_SYMBOL = re.compile(r"\bP?MPI_\w+|\b[nr]ccl[A-Z]\w*|<(?:mpi|nccl|rccl)\.h>")
 
 
 def illegal(kind: str, labels: tuple[str, ...], reason: str, status: MoveStatus = MoveStatus.ILLEGAL) -> MoveResult:
@@ -2502,6 +2507,12 @@ class Session:
         if self.unplaced is None:
             self.end_moves()
         chosen = default_devices(self.sdfg, self.targets) | (devices or {})
+        if skeleton(self.sdfg) is not None:
+            on_gpu = sorted(name for name, device in (devices or {}).items() if device != "cpu")
+            if on_gpu:
+                reason = f"a program that communicates runs on the CPU in this version; place {on_gpu[0]} on the cpu."
+                return PlaceResult(status=MoveStatus.ILLEGAL, reason=reason)
+            chosen = dict.fromkeys(chosen, "cpu")
         refusal = check_devices(self.sdfg, self.targets, chosen)
         if refusal is not None:
             return PlaceResult(status=MoveStatus.ILLEGAL, reason=refusal)
@@ -2685,6 +2696,13 @@ class Session:
         :returns: The outcome; ``ok`` and ``unchecked`` change the kernel's library. ``unchecked`` had no oracle to match
             (:func:`~tactics.stages.kernel.measure_kernel`), so the whole program checks the kernel.
         """
+        named = COMMUNICATION_SYMBOL.search(source)
+        if named is not None:
+            return KernelOutcome(
+                kernel=name,
+                status=KernelStatus.REFUSED,
+                reason=f"a kernel computes; it does not communicate ({named.group(0)}): the program's rows exchange.",
+            )
         default = self.default_kernel(name)
         if language != kernel_language(default.device):
             return KernelOutcome(

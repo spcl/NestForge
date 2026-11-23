@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 import dace
+from dace.libraries.comm.nodes.node import CommNode
 from dace.libraries.standard.nodes.copy import CopyLibraryNode
 from dace.libraries.standard.nodes.copy.common import INPUT_CONNECTOR_NAME, OUTPUT_CONNECTOR_NAME
 from dace.libraries.standard.nodes.external_call import ExternalCall
@@ -84,11 +85,12 @@ def is_call(state: SDFGState, node: nodes.Node) -> bool:
 
 def top_level_doalls(state: SDFGState) -> list[nodes.MapEntry | nodes.CodeNode]:
     """The doalls of ``state`` not nested in a map: its maps, and its library calls (each a black-box doall; a
-    kernel NestForge built is not one), in ``scope_children`` order."""
+    kernel NestForge built is not one, nor is a communication row, which never joins a kernel), in
+    ``scope_children`` order."""
     return [
         n
         for n in state.scope_children()[None]
-        if isinstance(n, nodes.MapEntry) or (is_call(state, n) and not isinstance(n, ExternalCall))
+        if isinstance(n, nodes.MapEntry) or (is_call(state, n) and not isinstance(n, (ExternalCall, CommNode)))
     ]
 
 

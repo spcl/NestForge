@@ -1064,6 +1064,11 @@ def plan_inline_library(row: Row) -> Rewrite | str:
         return Refused(
             f"{node.label} is a kernel NestForge built (a scope), not a library call.", Refusal.WRONG_ROW_KIND
         )
+    if comm_class(node) is not None:
+        return Refused(
+            f"{node.label} communicates: code generation expands it at finalize, so it stays a library call.",
+            Refusal.WRONG_ROW_KIND,
+        )
     implementation = expansion(node)
     if implementation is None:
         return Refused(
