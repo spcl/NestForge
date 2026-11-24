@@ -81,7 +81,7 @@ def test_the_mlir_pipeline_builds_a_correct_kernel_through_polygeist(tmp_path: P
     sut = session(tmp_path)
     assert pipeline_syntax_error("mlir", "clang++", "builtin.module(canonicalize)") == ""
 
-    done = sut.set_pipeline("mlir", "builtin.module(affine-loop-tile{tile-size=8},canonicalize)")
+    done = sut.set_pipeline("mlir", "builtin.module(func.func(affine-loop-tile{tile-size=8}),canonicalize)")
 
     assert done.status is MoveStatus.APPLIED
     assert built(sut) == ["mlir-pipeline"]

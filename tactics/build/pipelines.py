@@ -18,6 +18,7 @@ import shlex
 import shutil
 import subprocess
 from collections.abc import Sequence
+from functools import lru_cache
 from pathlib import Path
 
 #: The front end's flags for IR that passes may still change: no optimization, and no ``optnone`` on functions.
@@ -34,6 +35,15 @@ MLIR_LOWERING: tuple[str, ...] = (
 )
 #: Characters of a tool's error output the agent reads.
 ERROR_TAIL = 2000
+
+
+@lru_cache(maxsize=None, typed=True)
+def cgeist_flags(compiler: str) -> tuple[str, ...]:
+    """cgeist's flags, with the compiler's own builtin headers (``stddef.h``): Polygeist installs no clang resource
+    directory of its own, so without them every unit that includes a C++ standard header fails."""
+    done = subprocess.run([compiler, "-print-resource-dir"], capture_output=True, text=True, check=False)
+    resource = Path(done.stdout.strip()) / "include"
+    return (*CGEIST_FLAGS, "-I", str(resource)) if done.returncode == 0 and resource.is_dir() else CGEIST_FLAGS
 
 
 class PipelineError(RuntimeError):
@@ -104,7 +114,7 @@ def build_mlir_pipeline(
     for unit in units:
         affine, moved = unit.with_suffix(".mlir"), unit.with_suffix(".opt.mlir")
         lowered, ir = unit.with_suffix(".llvm.mlir"), unit.with_suffix(".ll")
-        run("cgeist", [tools["cgeist"], str(unit), *CGEIST_FLAGS, "-o", str(affine)])
+        run("cgeist", [tools["cgeist"], str(unit), *cgeist_flags(compiler), "-o", str(affine)])
         run("pipeline", [tools["polygeist-opt"], str(affine), f"--pass-pipeline={pipeline}", "-o", str(moved)])
         run("lowering", [tools["polygeist-opt"], str(moved), *MLIR_LOWERING, "-o", str(lowered)])
         run("mlir-translate", [tools["mlir-translate"], "--mlir-to-llvmir", str(lowered), "-o", str(ir)])

@@ -117,7 +117,7 @@ class SetLlvmPasses(Args):
 
 class SetMlirPasses(Args):
     pipeline: str = pydantic.Field(
-        description="A polygeist-opt --pass-pipeline=, e.g. builtin.module(affine-loop-tile{tile-size=32},canonicalize)."
+        description="A polygeist-opt --pass-pipeline=, e.g. builtin.module(func.func(affine-loop-tile{tile-size=32}),canonicalize)."
     )
 
 

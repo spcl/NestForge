@@ -19,11 +19,11 @@ from functools import lru_cache
 from pathlib import Path
 
 from tactics.build.pipelines import (
-    CGEIST_FLAGS,
     ERROR_TAIL,
     MLIR_LOWERING,
     PipelineError,
     archived,
+    cgeist_flags,
     compiled_ir,
     missing,
     run,
@@ -177,7 +177,7 @@ def mlir_after(unit: Path, compiler: str, moves: Sequence[PassMove]) -> Path:
     found = tools(compiler)
     affine, moved = unit.with_suffix(".mlir"), unit.with_suffix(".moved.mlir")
     if not affine.exists():
-        run("cgeist", [found["cgeist"], str(unit), *CGEIST_FLAGS, "-o", str(affine)])
+        run("cgeist", [found["cgeist"], str(unit), *cgeist_flags(compiler), "-o", str(affine)])
     run(
         "MLIR moves", [found["polygeist-opt"], str(affine), f"--pass-pipeline={mlir_pipeline(moves)}", "-o", str(moved)]
     )
