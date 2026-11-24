@@ -6,6 +6,7 @@ oracle, the oracle's cost is bounded, a long call's work survives its stop, and 
 import os
 import re
 import signal
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -630,16 +631,54 @@ def test_two_filtered_sweeps_of_one_source_build_in_different_folders(
     built: list[str] = []
     gcc, clang = device_variants("cpu")[:2]
 
-    def measured(src: KernelSource, probe: Probe, reps: int, variant: Variant, out_dir: Path) -> variants.VariantCell:
+    def building(src: KernelSource, variant: Variant, out_dir: Path) -> Path:
         built.append(out_dir.name)
+        return out_dir
+
+    def measured(
+        src: KernelSource, probe: Probe, reps: int, variant: Variant, out_dir: Path, archive: Path | str
+    ) -> variants.VariantCell:
         return variants.VariantCell(variant, unchecked_verdict("strict-ieee", "stub"), out_dir)
 
+    monkeypatch.setattr(variants, "build_variant", building)
     monkeypatch.setattr(variants, "measure_variant", measured)
     source = cast(KernelSource, SimpleNamespace(symbol="kernel", abi_order=[]))  # the fields a sweep folder reads
-    no_probe = cast(Probe, None)  # measure_variant is stubbed: nothing probes
+    no_probe = cast(Probe, None)  # build_variant and measure_variant are stubbed: nothing builds or probes
     cells: dict[Variant, variants.VariantCell] = {}
 
     variants.select_variant(source, no_probe, 1, [gcc], tmp_path, cells)
     variants.select_variant(source, no_probe, 1, [clang], tmp_path, cells)
 
     assert built == ["v0", "v1"]
+
+
+def test_a_sweep_builds_its_cells_at_once_and_times_them_one_after_another(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gcc, clang = device_variants("cpu")[:2]
+    both_building = threading.Barrier(2, timeout=30)  # a serial sweep never has two builds waiting here
+    timing: list[str] = []
+    timed_at_once: list[bool] = []
+
+    def building(src: KernelSource, variant: Variant, out_dir: Path) -> Path:
+        both_building.wait()
+        return out_dir
+
+    def measured(
+        src: KernelSource, probe: Probe, reps: int, variant: Variant, out_dir: Path, archive: Path | str
+    ) -> variants.VariantCell:
+        timed_at_once.append(bool(timing))
+        timing.append(out_dir.name)
+        result = variants.VariantCell(variant, unchecked_verdict("strict-ieee", "stub"), out_dir)
+        timing.pop()
+        return result
+
+    monkeypatch.setattr(variants, "build_workers", lambda: 2)
+    monkeypatch.setattr(variants, "build_variant", building)
+    monkeypatch.setattr(variants, "measure_variant", measured)
+    source = cast(KernelSource, SimpleNamespace(symbol="kernel", abi_order=[]))  # the fields a sweep folder reads
+
+    result = variants.select_variant(source, cast(Probe, None), 1, [gcc, clang], tmp_path)
+
+    assert [cell.variant for cell in result.cells] == [gcc, clang]
+    assert timed_at_once == [False, False]

@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -129,13 +131,26 @@ def device_variants(device: str, compilers: Sequence[str] | None = None) -> list
     return VARIANTS_BY_DEVICE[device](compilers)
 
 
-def measure_variant(src: KernelSource, probe: Probe, reps: int, variant: Variant, out_dir: Path) -> VariantCell:
-    """One sweep cell: ``variant``'s build of ``src`` under ``out_dir``, measured."""
+def build_variant(src: KernelSource, variant: Variant, out_dir: Path) -> Path | str:
+    """``variant``'s build of ``src`` under ``out_dir``: its archive, or the error of a failed build."""
     try:
-        archive = build_kernel_library(src, variant.compiler, list(variant.flags), out_dir)
+        return build_kernel_library(src, variant.compiler, list(variant.flags), out_dir)
     except RuntimeError as err:
-        return VariantCell(variant, failed_verdict(variant.fp_mode, str(err)))
-    return VariantCell(variant, measure_kernel(archive, src, probe, reps, variant.fp_mode), archive)
+        return str(err)
+
+
+def measure_variant(
+    src: KernelSource, probe: Probe, reps: int, variant: Variant, out_dir: Path, built: Path | str
+) -> VariantCell:
+    """One sweep cell: ``variant``'s build ``built`` of ``src`` under ``out_dir``, measured."""
+    if isinstance(built, str):
+        return VariantCell(variant, failed_verdict(variant.fp_mode, built))
+    return VariantCell(variant, measure_kernel(built, src, probe, reps, variant.fp_mode), built)
+
+
+def build_workers() -> int:
+    """Compilers a sweep runs at once: one per core this process may use."""
+    return len(os.sched_getaffinity(0))
 
 
 def select_variant(
@@ -147,14 +162,22 @@ def select_variant(
     done: dict[Variant, VariantCell] | None = None,
 ) -> VariantResult:
     """Build every variant of ``src`` under ``out_dir``, time each against the NumPy oracle at its own FP rung, and
-    return all cells with the fastest correct one as winner; a failed build is a cell without an archive.
+    return all cells with the fastest correct one as winner; a failed build is a cell without an archive. The builds
+    run in parallel, the timings one after another, so no timed run shares the machine with a compiler.
 
     :param done: Cells of an earlier sweep of the same source that was stopped; each new cell joins them, so the next
         sweep goes on from there."""
     finished = done if done is not None else {}
-    for variant in variants:
-        if variant not in finished:
-            finished[variant] = measure_variant(src, probe, reps, variant, out_dir / f"v{len(finished)}")
+    todo = [variant for variant in dict.fromkeys(variants) if variant not in finished]
+    dirs = [out_dir / f"v{len(finished) + i}" for i in range(len(todo))]
+    pool = ThreadPoolExecutor(build_workers())
+    try:
+        builds = list(pool.map(build_variant, [src] * len(todo), todo, dirs))
+    finally:
+        # a stop lets the running compilers finish in the background and starts no other
+        pool.shutdown(wait=False, cancel_futures=True)
+    for variant, folder, built in zip(todo, dirs, builds):
+        finished[variant] = measure_variant(src, probe, reps, variant, folder, built)
     cells = [finished[variant] for variant in variants]
     correct = [cell for cell in cells if cell.verdict.ok]
     winner = min(correct, key=lambda cell: cell.verdict.time_us) if correct else None
