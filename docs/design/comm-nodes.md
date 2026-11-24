@@ -3,7 +3,7 @@
 [Designs](README.md) · [Structure tree](../ir.md) · [Stages](../stages.md)
 
 Status: motion rules built (2026-11-19, `tactics/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
-the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused. The tree rows of section 2 are built (2026-11-23, `comm_line` in `tactics/ir/comm.py`, `tests/test_comm_tree.py`). The invariants of section 4 are built (2026-11-23, `Session.comm_refusal`, `tests/test_comm_invariants.py`); `isolate_communication` is not. Section 5 is built (2026-11-23, `tests/test_comm_guards.py`): no row is a doall or joins a kernel, the default scopes cut at rows, `set_scope` refuses them, a kernel source may not call MPI, NCCL or RCCL, a program that communicates is placed on the CPU, and a row is not inlined and runs on MPI only. Section 6 is built (2026-11-23, `tests/test_comm_layout.py`): `relayout` refuses and does not list an argument the bench splits over the ranks (`Session.distributed`, from the spec's `mpi.arrays`); the buffers of communication rows, blocking and nonblocking, are relayout's to pack (`pack_mpi_buffers`, package 17), so they need no refusal. The rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
+the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused. The tree rows of section 2 are built (2026-11-23, `comm_line` in `tactics/ir/comm.py`, `tests/test_comm_tree.py`). The invariants of section 4 are built (2026-11-23, `Session.comm_refusal`, `tests/test_comm_invariants.py`; nonblocking patterns 2026-11-24, `tests/test_comm_nonblocking.py`); `isolate_communication` is not. Section 5 is built (2026-11-23, `tests/test_comm_guards.py`): no row is a doall or joins a kernel, the default scopes cut at rows, `set_scope` refuses them, a kernel source may not call MPI, NCCL or RCCL, a program that communicates is placed on the CPU, and a row is not inlined and runs on MPI only. Section 6 is built (2026-11-23, `tests/test_comm_layout.py`): `relayout` refuses and does not list an argument the bench splits over the ranks (`Session.distributed`, from the spec's `mpi.arrays`); the buffers of communication rows, blocking and nonblocking, are relayout's to pack (`pack_mpi_buffers`, package 17), so they need no refusal. The rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
 HPCAgent-Bench `cc1124254`, and reviewed the same day against the code each section names.
 
 ## Goal
@@ -71,10 +71,17 @@ def skeleton(sdfg: SDFG) -> Skeleton                                            
 
 `starts_of` returns the `START` rows a `WAIT` completes. A `START` writes its request through its `_request`
 connector, and a `WAIT` reads requests through its `_request` connector. The `START` rows of a `WAIT` are those that
-write the container the `WAIT` reads and that reach the `WAIT` in the control flow with no other `WAIT` on that
-container between. When the request container is an array and the subsets cannot be compared, every `START` that
-writes the array and reaches the `WAIT` counts. The answer may then hold too many rows, which keeps more buffers in
-flight and is safe.
+store their request in an element the `WAIT` reads (`Wait(req[2])` completes only the start stored in `req[2]`),
+directly or through the copies the frontend adds, and that reach the `WAIT` along the control flow with the request
+stored where it reads and no other `WAIT` completing it first (`control_flow`, `paths_between` in
+`tactics/ir/comm.py`). A start in a loop reaches a wait at the head of the next step, and a start before a loop
+reaches a wait after it through a zero-trip loop. When an element cannot be told (through a view, or an index the
+facts do not decide), every `START` that writes the array and reaches the `WAIT` counts. The answer may then hold
+too many rows, which keeps more buffers in flight and is safe.
+
+I2 checks the states on those paths. On a path that steps a loop, a subset names other elements than it did at the
+start (`b[i - 1]` after the step is the `b[i]` before it), so those states are compared with the buffers by
+container, not by subset.
 
 DaCe's `dace.libraries.comm.schedule` holds the same logic for schedule-tree nodes (`is_start`, `is_wait`,
 `_wait_for_buffers_in_flight`). Those functions take tree nodes, so `comm.py` implements the SDFG form, and a test

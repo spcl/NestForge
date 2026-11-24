@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Nonblocking communication patterns (``docs/design/comm-nodes.md``, sections 1 to 4), as the frontend builds them
 and canonicalization leaves them: one ``Wait`` per request, two exchanges whose waits complete in the opposite order
-to their starts, a halo exchange every time step, and two programs that break the rules of a request in flight. Each
+to their starts, a halo exchange every time step, exchanges pre-posted one step ahead, and two programs that break the rules of a request in flight. Each
 wait must complete exactly the starts whose requests it reads, a wait moves only where nothing touches what is in
 flight, every move the session lists for a row applies, and the in-flight check (I2) names a program that writes a
 sent buffer or reads a received one before its wait. Nothing here runs MPI: ``tests/test_comm_ranks.py`` runs the
@@ -10,13 +10,24 @@ same fixtures on ranks."""
 
 import dace
 import pytest
-from comm_programs import overwrite_in_flight, read_before_wait
-from comm_rank_programs import halo_steps, halo_waits, two_exchanges
+from comm_programs import overwrite_in_flight, read_before_wait, read_last_step_before_wait
+from comm_rank_programs import halo_steps, halo_waits, pipelined_rows, two_exchanges
 from dace.frontend.python.parser import DaceProgram
 from dace.libraries.comm.nodes.node import CommNode
 from dace.sdfg import nodes
+from dace.sdfg.state import LoopRegion
 
-from tactics.ir.comm import CommClass, Skeleton, comm_class, in_flight, isolation_refusal, skeleton, starts_of
+from tactics.ir.comm import (
+    CommClass,
+    Skeleton,
+    comm_class,
+    in_flight,
+    isolation_refusal,
+    paths_between,
+    skeleton,
+    starts_of,
+    written_requests,
+)
 from tactics.records import MoveStatus
 from tactics.session import Session
 from tactics.stages.lib_motion import LIB_AFTER, LIB_BEFORE, accessed, in_flight_refusal, plan_lib_motion
@@ -26,6 +37,7 @@ FIXTURES: dict[str, DaceProgram] = {
     "halo_waits": halo_waits,
     "two_exchanges": two_exchanges,
     "halo_steps": halo_steps,
+    "pipelined_rows": pipelined_rows,
 }
 
 
@@ -170,11 +182,28 @@ def test_the_wait_of_a_step_does_not_move_past_the_stencil_that_reads_the_ghost_
     assert isinstance(refused, str) and "ap" in refused, refused
 
 
+def test_a_pre_posted_wait_completes_the_starts_before_it_and_keeps_only_the_received_rows_in_flight() -> None:
+    """The wait at the head of a step completes what the prologue or the previous step started: control flow is not
+    followed, so it counts every start of its requests, and only ``b`` is received."""
+    sdfg = canonical(pipelined_rows).sdfg
+    waits = [(n, s) for n, s in sdfg.all_nodes_recursive() if comm_class(n) is CommClass.WAIT]
+    assert len(waits) == 2, "one wait in the loop, one after it"
+
+    for wait, state in waits:
+        starts = starts_of(sdfg, state, wait)
+        assert sorted(type(start).__name__ for _, start in starts) == ["Irecv", "Irecv", "Isend", "Isend"]
+        assert in_flight(sdfg, state, wait) == (frozenset({"a"}), frozenset({"b"}))
+
+
 @pytest.mark.parametrize(
-    ("program", "start", "detail"),
-    [(overwrite_in_flight, "Isend", "writes a"), (read_before_wait, "Irecv", "reads ghost")],
+    ("program", "detail"),
+    [
+        (overwrite_in_flight, "writes a"),
+        (read_before_wait, "reads ghost"),
+        (read_last_step_before_wait, "reads b"),
+    ],
 )
-def test_a_program_that_touches_a_buffer_in_flight_is_named(program: DaceProgram, start: str, detail: str) -> None:
+def test_a_program_that_touches_a_buffer_in_flight_is_named(program: DaceProgram, detail: str) -> None:
     """I2 on a program that breaks it from the start: the compute between the starts and the wait writes the sent
     buffer, or reads the received one, so no move may keep or create that order."""
     sdfg = canonical(program).sdfg
@@ -182,3 +211,22 @@ def test_a_program_that_touches_a_buffer_in_flight_is_named(program: DaceProgram
     refused = in_flight_refusal(sdfg)
 
     assert refused is not None and "is in flight" in refused and detail in refused, refused
+
+
+def test_a_path_around_the_loop_compares_what_the_last_step_received_by_container() -> None:
+    """From the receive of row ``i`` to the wait of the next step, the path steps the loop: the read of ``b[i - 1]``
+    there is the row in flight, though the two subsets look disjoint, so the path marks it as stepped."""
+    sdfg = canonical(read_last_step_before_wait).sdfg
+    in_loop = [
+        (n, s)
+        for n, s in sdfg.all_nodes_recursive()
+        if comm_class(n) is not None and isinstance(s.parent_graph, LoopRegion)
+    ]
+    receive, receive_state = next((n, s) for n, s in in_loop if type(n).__name__ == "Irecv")
+    _, wait_state = next((n, s) for n, s in in_loop if comm_class(n) is CommClass.WAIT)
+
+    between = paths_between(sdfg, receive_state, wait_state, written_requests(sdfg, receive_state, receive))
+
+    assert between is not None, "the receive of a step reaches the wait of the next"
+    readers = [stepped for state, stepped in between if "b" in accessed(state)[0]]
+    assert readers == [True], between

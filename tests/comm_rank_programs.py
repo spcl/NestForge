@@ -175,6 +175,27 @@ def halo_steps(
 
 
 @dace.program
+def pipelined_rows(
+    a: dace.float64[K, 4], b: dace.float64[K, 4], d: dace.float64[K, 4], left: dace.int32, right: dace.int32
+) -> None:
+    """Pre-posted exchanges: row ``i`` is sent and received while row ``i - 1``, which arrived one step earlier, is
+    used. Each step's wait completes the starts of the step before (or of the prologue), and a last wait after the
+    loop completes the final row."""
+    req = dace.define_local([2], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(a[0], right, 0, req[0])
+    MPI.COMM_WORLD.Irecv(b[0], left, 0, req[1])
+    for i in range(1, K):
+        MPI.Request.Waitall(req)
+        MPI.COMM_WORLD.Isend(a[i], right, 0, req[0])
+        MPI.COMM_WORLD.Irecv(b[i], left, 0, req[1])
+        for j in dace.map[0:4]:
+            d[i - 1, j] = b[i - 1, j] * 2.0
+    MPI.Request.Waitall(req)
+    for j in dace.map[0:4]:
+        d[K - 1, j] = b[K - 1, j] * 2.0
+
+
+@dace.program
 def residual_loop(a: dace.float64[N], r: dace.float64[T], s: dace.float64[N]) -> None:
     """A relaxation whose residual every rank reduces each step, with an update independent of the residual. The
     reduction reads the step's slice ``r[t : t + 1]`` in place: canonicalization leaves no view in front of it."""
@@ -317,6 +338,7 @@ FIXTURES = {
     "halo_waits": Fixture(halo_waits, halo_inputs, ("b", "c", "ghost")),
     "two_exchanges": Fixture(two_exchanges, two_exchanges_inputs, ("ghost_a", "ghost_x", "b")),
     "halo_steps": Fixture(halo_steps, halo_steps_inputs, ("ap", "b", "c")),
+    "pipelined_rows": Fixture(pipelined_rows, ring_inputs, ("b", "d")),
     "residual_loop": Fixture(residual_loop, residual_inputs, ("a", "r", "s")),
     "ring": Fixture(ring, ring_inputs, ("b", "d")),
     "redistribute": Fixture(redistribute, redistribute_inputs, ("Sigma",)),

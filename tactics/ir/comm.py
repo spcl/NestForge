@@ -159,11 +159,16 @@ def request_range(state: SDFGState, end: nodes.Node, edge: MultiConnectorEdge) -
     return container(state, end, name), None if viewed else edge.data.subset
 
 
-def written_requests(sdfg: dace.SDFG, state: SDFGState, start: nodes.Node) -> list[RequestRange]:
-    """Where ``start``'s request ends up: what it writes through ``_request``, and every element a code node or a
-    copy then stores it into, transitively, as :func:`forwarded` follows it by container."""
+#: A request range a start's request is stored in, and the state that stores it there.
+StoredRequest = tuple[RequestRange, SDFGState]
+
+
+def written_requests(sdfg: dace.SDFG, state: SDFGState, start: nodes.Node) -> list[StoredRequest]:
+    """Where ``start``'s request ends up, and where it is stored there: what it writes through ``_request`` (in its
+    own state), and every element a code node or a copy then stores it into, transitively, as :func:`forwarded`
+    follows it by container."""
     reached = forwarded(sdfg, requests_of(state, start, written=True))
-    ranges = [request_range(state, e.dst, e) for e in state.out_edges(start) if e.src_conn == REQUEST]
+    stored = [(request_range(state, e.dst, e), state) for e in state.out_edges(start) if e.src_conn == REQUEST]
     for other in sdfg.states():
         for edge in other.edges():
             if edge.data.is_empty() or not isinstance(edge.dst, nodes.AccessNode) or comm_class(edge.src) is not None:
@@ -180,8 +185,15 @@ def written_requests(sdfg: dace.SDFG, state: SDFGState, start: nodes.Node) -> li
                 name, elements = request_range(other, edge.dst, edge)
                 if source is not None and edge.data.data == source:
                     elements = edge.data.dst_subset  # a copy names the source; the destination's elements differ
-                ranges.append((name, elements))
-    return ranges
+                stored.append(((name, elements), other))
+    return stored
+
+
+def read_requests(state: SDFGState, wait: nodes.Node) -> list[RequestRange]:
+    """The request ranges ``wait`` reads."""
+    return [
+        request_range(state, e.src, e) for e in state.in_edges(wait) if e.dst_conn == REQUEST and not e.data.is_empty()
+    ]
 
 
 def same_request(sdfg: dace.SDFG, written: RequestRange, read: RequestRange) -> bool:
@@ -194,22 +206,166 @@ def same_request(sdfg: dace.SDFG, written: RequestRange, read: RequestRange) -> 
     return subsets.intersects(written[1], read[1], sdfg.facts()) is not dace.symbolic.Truth.FALSE
 
 
+class Junction:
+    """A point of the control flow that is not a state: the head of a loop, the fork or the join of a branch."""
+
+    __slots__ = ("label",)
+
+    def __init__(self, label: str) -> None:
+        self.label = label
+
+
+#: A node of :func:`control_flow`: a state, or a junction between states.
+FlowNode = SDFGState | Junction
+#: The edges of :func:`control_flow` out of each node, by ``id``: the node they lead to, and whether the edge steps a
+#: loop (its back edge), after which the loop's variable holds another value.
+FlowEdges = dict[int, list[tuple[FlowNode, bool]]]
+
+
+def control_flow(sdfg: dace.SDFG) -> FlowEdges:
+    """The program's control flow over its states, every region flattened: a loop is a head that enters its body and
+    leaves it (a zero-trip loop runs no body), and each end of the body steps back to the head; a branch forks into
+    each body and joins after them, or past them without an ``else``."""
+    successors: FlowEdges = {}
+
+    def link(source: FlowNode, target: FlowNode, step: bool) -> None:
+        successors.setdefault(id(source), []).append((target, step))
+
+    def ends(block: ControlFlowBlock) -> tuple[list[FlowNode], list[FlowNode]]:
+        """Where control enters ``block``, and where it leaves."""
+        if isinstance(block, SDFGState):
+            return [block], [block]
+        if isinstance(block, LoopRegion):
+            head = Junction(f"{block.label} head")
+            entries, exits = region(block)
+            for entry in entries:
+                link(head, entry, False)
+            for exit_ in exits:
+                link(exit_, head, True)
+            return [head], [head]
+        if isinstance(block, ConditionalBlock):
+            fork, join = Junction(f"{block.label} fork"), Junction(f"{block.label} join")
+            for _, body in block.branches:
+                entries, exits = region(body)
+                for entry in entries:
+                    link(fork, entry, False)
+                for exit_ in exits:
+                    link(exit_, join, False)
+                if not entries:
+                    link(fork, join, False)
+            if all(condition is not None for condition, _ in block.branches):
+                link(fork, join, False)
+            return [fork], [join]
+        if isinstance(block, ControlFlowRegion):
+            entries, exits = region(block)
+            if entries:
+                return entries, exits
+        passing = Junction(str(block.label))
+        return [passing], [passing]
+
+    def region(graph: ControlFlowRegion) -> tuple[list[FlowNode], list[FlowNode]]:
+        if not graph.nodes():
+            return [], []
+        parts = {id(block): ends(block) for block in graph.nodes()}
+        for edge in graph.edges():
+            for exit_ in parts[id(edge.src)][1]:
+                for entry in parts[id(edge.dst)][0]:
+                    link(exit_, entry, False)
+        sinks = [block for block in graph.nodes() if graph.out_degree(block) == 0]
+        return parts[id(graph.start_block)][0], [exit_ for block in sinks for exit_ in parts[id(block)][1]]
+
+    region(sdfg)
+    return successors
+
+
+def completing(sdfg: dace.SDFG, written: list[StoredRequest]) -> dict[int, frozenset[str]]:
+    """Each state (by ``id``) holding a ``WAIT`` that reads an element of ``written``, and the request containers
+    through which it does: once a path has stored the request in one of them, the wait there completes it."""
+    found: dict[int, frozenset[str]] = {}
+    for state in sdfg.states():
+        for node in state.nodes():
+            if comm_class(node) is not CommClass.WAIT:
+                continue
+            through = frozenset(
+                w[0] for w, _ in written for r in read_requests(state, node) if same_request(sdfg, w, r)
+            )
+            if through:
+                found[id(state)] = found.get(id(state), frozenset()) | through
+    return found
+
+
+def paths_between(
+    sdfg: dace.SDFG, start: SDFGState, wait: SDFGState, written: list[StoredRequest]
+) -> list[tuple[SDFGState, bool]] | None:
+    """The states a path runs from ``start`` until ``wait`` completes the request it stores (``written``), each with
+    whether a loop stepped on the way (its subsets then name other elements than at ``start``); ``None`` when no
+    path reaches ``wait`` with the request stored where it reads. A path ends at any other wait that completes the
+    request first, and a wait reached before the request is stored where it reads does not complete it. A state
+    that holds both the start and the wait reaches itself."""
+    if start is wait:
+        return []
+    successors = control_flow(sdfg)
+    stores: dict[int, frozenset[str]] = {}
+    for (name, _), state in written:
+        stores[id(state)] = stores.get(id(state), frozenset()) | {name}
+    waits = completing(sdfg, written)
+    Key = tuple[int, bool, frozenset[str]]
+    nodes_of: dict[Key, FlowNode] = {}
+    parents: dict[Key, list[Key]] = {}
+    arrivals: list[Key] = []
+    first: Key = (id(start), False, stores.get(id(start), frozenset()))
+    nodes_of[first] = start
+    pending: list[Key] = [first]
+    while pending:
+        key = pending.pop()
+        _, stepped, stored = key
+        for after, step in successors.get(key[0], []):
+            if waits.get(id(after), frozenset()) & stored:
+                if after is wait:
+                    arrivals.append(key)
+                continue  # another wait completes the request first
+            child: Key = (id(after), stepped or step, stored | stores.get(id(after), frozenset()))
+            parents.setdefault(child, []).append(key)
+            if child not in nodes_of:
+                nodes_of[child] = after
+                pending.append(child)
+    if not arrivals:
+        return None
+    on_path: set[Key] = set()
+    pending = list(arrivals)
+    while pending:
+        key = pending.pop()
+        if key in on_path:
+            continue
+        on_path.add(key)
+        pending += parents.get(key, [])
+    between: dict[int, tuple[SDFGState, bool]] = {}
+    for key in on_path:
+        node = nodes_of[key]
+        if isinstance(node, SDFGState) and node is not start and node is not wait:
+            between[key[0]] = (node, key[1] or (key[0] in between and between[key[0]][1]))
+    return list(between.values())
+
+
 def starts_of(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node) -> list[tuple[SDFGState, nodes.Node]]:
-    """The ``START`` rows whose requests ``wait`` reads, directly or through copies: every start of the program
-    that writes an element of a request array the wait reads (``Wait(req[2])`` completes only the start stored in
-    ``req[2]``). Where an element cannot be told, through a view or an unknown index, every start that writes the
-    array counts, and without the control flow between them the answer may hold too many rows: both keep more
-    buffers in flight, which is safe."""
-    reads = [
-        request_range(state, e.src, e) for e in state.in_edges(wait) if e.dst_conn == REQUEST and not e.data.is_empty()
-    ]
-    return [
-        (other, node)
-        for other in sdfg.states()
-        for node in other.nodes()
-        if comm_class(node) is CommClass.START
-        and any(same_request(sdfg, w, r) for w in written_requests(sdfg, other, node) for r in reads)
-    ]
+    """The ``START`` rows ``wait`` completes (design, section 2): those that store a request in an element ``wait``
+    reads (``Wait(req[2])`` completes only the start stored in ``req[2]``), directly or through copies, and whose
+    request reaches ``wait`` along the control flow, stored where it reads, with no other wait completing it first.
+    A start in a loop reaches a wait at the head of the next step; one before a loop reaches a wait after it through
+    a zero-trip loop. Where an element cannot be told, through a view or an unknown index, every start writing the
+    array counts, which keeps more buffers in flight and is safe."""
+    reads = read_requests(state, wait)
+    found = []
+    for other in sdfg.states():
+        for node in other.nodes():
+            if comm_class(node) is not CommClass.START:
+                continue
+            written = written_requests(sdfg, other, node)
+            if not any(same_request(sdfg, w, r) for w, _ in written for r in reads):
+                continue
+            if paths_between(sdfg, other, state, written) is not None:
+                found.append((other, node))
+    return found
 
 
 def in_flight(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node) -> tuple[frozenset[str], frozenset[str]]:

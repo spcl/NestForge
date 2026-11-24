@@ -75,6 +75,22 @@ def read_before_wait(
     MPI.Request.Waitall(req)
 
 
+@dace.program
+def read_last_step_before_wait(
+    a: dace.float64[K, 4], b: dace.float64[K, 4], d: dace.float64[K, 4], left: dace.int32, right: dace.int32
+) -> None:
+    """Wrong on purpose: each step reads the row the previous step received (``b[i - 1]``, the ``b[i]`` of that step)
+    before the wait that completes it. Only after the loop's step do the two subsets name the same row."""
+    req = dace.define_local([2], dtype=MPI.Request)
+    for i in range(1, K):
+        for j in dace.map[0:4]:
+            d[i - 1, j] = b[i - 1, j] * 2.0
+        MPI.Request.Waitall(req)
+        MPI.COMM_WORLD.Isend(a[i], right, 0, req[0])
+        MPI.COMM_WORLD.Irecv(b[i], left, 0, req[1])
+    MPI.Request.Waitall(req)
+
+
 #: Every fixture, by name.
 PROGRAMS = {
     "halo_exchange": halo_exchange,
