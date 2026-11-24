@@ -187,12 +187,16 @@ COPY_TO_TMA = "copy-to-tma"
 SET_PIPELINE_DEPTH = "set-pipeline-depth"
 #: The stages ``set-pipeline-depth`` is listed with: two buffers, one loading while the other is read.
 PROBE_PIPELINE_DEPTH = 2
-#: The schedules ``set-schedule-gpu`` takes on a doall inside a kernel, as DaCe schedules; ``guided`` waits for DaCe.
+#: The schedules ``set-schedule-gpu`` takes on a doall inside a kernel, as DaCe schedules; ``guided`` is the dynamic
+#: queue with batches that halve (the map's ``omp_schedule``).
 GPU_INNER_SCHEDULES = {
     "sequential": dtypes.ScheduleType.Sequential,
     "static": dtypes.ScheduleType.GPU_ThreadBlock,
     "dynamic": dtypes.ScheduleType.GPU_ThreadBlock_Dynamic,
+    "guided": dtypes.ScheduleType.GPU_ThreadBlock_Dynamic,
 }
+#: The schedules of ``set-schedule-gpu`` that run a shared queue and take a ``chunk``.
+GPU_QUEUE_SCHEDULES = ("dynamic", "guided")
 #: The most threads a block has on every GPU NestForge targets.
 MAX_BLOCK_THREADS = 1024
 #: The move kinds that work only inside a kernel (a scope): a schedule belongs to the device it is placed on.
@@ -1738,9 +1742,13 @@ class GpuChoice:
 
     block: tuple[int, ...] = ()
     schedule: str = "sequential"
+    #: For a queue schedule, how many round widths a block or warp takes from a range at once; 0 takes all of it.
+    chunk: int = 0
 
     def text(self) -> str:
-        return f"block={list(self.block)}" if self.block else self.schedule
+        if self.block:
+            return f"block={list(self.block)}"
+        return f"{self.schedule}, chunk={self.chunk}" if self.chunk else self.schedule
 
 
 def gpu_role(state: SDFGState, entry: nodes.MapEntry) -> str | None:
@@ -1755,7 +1763,7 @@ def gpu_role(state: SDFGState, entry: nodes.MapEntry) -> str | None:
 
 
 def plan_set_schedule_gpu(
-    row: Row, block: Sequence[int], schedule: str | None, chosen: Mapping[str, GpuChoice]
+    row: Row, block: Sequence[int], schedule: str | None, chosen: Mapping[str, GpuChoice], chunk: int | None = None
 ) -> GpuChoice | str:
     """The choice ``set-schedule-gpu`` makes for the doall ``row`` of a GPU kernel's body, given what the kernel's
     other doalls hold (``chosen``, by label), or why it is refused. DaCe's GPU code generator takes a kernel's thread
@@ -1771,8 +1779,12 @@ def plan_set_schedule_gpu(
             Refusal.WRONG_ROW_KIND,
         )
     if role == "kernel":
+        if chunk is not None:
+            return Refused(
+                f"{entry.map.label} is the kernel doall: chunk goes with a queue schedule.", Refusal.ARGUMENT
+            )
         return kernel_doall_choice(entry, state, block, schedule, chosen)
-    return inner_doall_choice(entry, state, block, schedule, chosen)
+    return inner_doall_choice(entry, state, block, schedule, chosen, chunk)
 
 
 def kernel_doall_choice(
@@ -1822,17 +1834,22 @@ def inner_doall_choice(
     block: Sequence[int],
     schedule: str | None,
     chosen: Mapping[str, GpuChoice],
+    chunk: int | None,
 ) -> GpuChoice | str:
     """:func:`plan_set_schedule_gpu` on a doall directly inside the kernel doall: how its threads share it."""
     label = entry.map.label
     kernel = cast(nodes.MapEntry, state.entry_node(entry))
     if block:
         return Refused(f"{label} is inside the kernel doall {kernel.map.label}; block goes on that.", Refusal.ARGUMENT)
-    if schedule == "guided":
-        return Refused("guided is not in DaCe's GPU code generator yet; take dynamic.", Refusal.ARGUMENT)
     if schedule not in GPU_INNER_SCHEDULES:
         return Refused(
             f"set-schedule-gpu takes schedule, one of {list(GPU_INNER_SCHEDULES)}, on {label}; not {schedule!r}.",
+            Refusal.ARGUMENT,
+        )
+    if chunk is not None and (schedule not in GPU_QUEUE_SCHEDULES or chunk < 0):
+        return Refused(
+            f"chunk is a number of round widths, at least 0, and goes with {' or '.join(GPU_QUEUE_SCHEDULES)}; not "
+            f"chunk={chunk} with {schedule}.",
             Refusal.ARGUMENT,
         )
     if schedule == "sequential":
@@ -1848,15 +1865,16 @@ def inner_doall_choice(
         for other in state.scope_children()[kernel]
         if isinstance(other, nodes.MapEntry) and other is not entry
     }
-    clash = [name for name, held in siblings.items() if held not in ("sequential", schedule)]
+    kind = GPU_INNER_SCHEDULES[schedule]
+    clash = [name for name, held in siblings.items() if held != "sequential" and GPU_INNER_SCHEDULES[held] is not kind]
     if clash:
         return Refused(
             f"{', '.join(clash)} in the same kernel is shared another way; static and dynamic doalls cannot share a "
             "kernel.",
             Refusal.ARGUMENT,
         )
-    if schedule == "dynamic" and len(entry.map.params) != 1:
-        return Refused(f"a dynamic doall has one dimension; {label} has {len(entry.map.params)}.", Refusal.ARGUMENT)
+    if schedule in GPU_QUEUE_SCHEDULES and len(entry.map.params) != 1:
+        return Refused(f"a {schedule} doall has one dimension; {label} has {len(entry.map.params)}.", Refusal.ARGUMENT)
     if schedule == "static":
         # bounded the way DaCe sizes a thread block: min(N, (i + 1) * 32) - i * 32 is 32, its last block guarded
         extent = prod(dace.symbolic.overapproximate(size) for size in entry.map.range.size())
@@ -1866,7 +1884,7 @@ def inner_doall_choice(
                 f"bounded by a constant of at most {MAX_BLOCK_THREADS}; tile it first, or take dynamic.",
                 Refusal.ARGUMENT,
             )
-    return GpuChoice(schedule=schedule)
+    return GpuChoice(schedule=schedule, chunk=chunk or 0)
 
 
 def set_gpu_choices(sdfg: dace.SDFG, choices: Mapping[str, Mapping[str, GpuChoice]]) -> None:
@@ -1883,6 +1901,12 @@ def set_gpu_choices(sdfg: dace.SDFG, choices: Mapping[str, Mapping[str, GpuChoic
                     node.map.gpu_block_size = list(choice.block)
                 elif choice.schedule != "sequential":
                     node.map.schedule = GPU_INNER_SCHEDULES[choice.schedule]
+                    if choice.schedule in GPU_QUEUE_SCHEDULES:
+                        guided = choice.schedule == "guided"
+                        node.map.omp_schedule = (
+                            dtypes.OMPScheduleType.Guided if guided else dtypes.OMPScheduleType.Default
+                        )
+                        node.map.omp_chunk_size = choice.chunk
 
 
 def plan_hoist_invariant_code(row: Row) -> Rewrite | str:
@@ -2128,9 +2152,11 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
         "the kernel's thread block (gpu_block_size), or the schedule of a doall inside it (in a GPU kernel only)",
         (
             "on the kernel doall, block=[bx, by] sets the threads of one block. On a doall directly inside it: sequential "
-            "(each thread runs it whole), static (one iteration per thread of the block, GPU_ThreadBlock) or dynamic "
-            "(the block's threads take iterations from a shared queue, GPU_ThreadBlock_Dynamic). The block comes from "
-            "one place only: the kernel doall, or the doalls inside it."
+            "(each thread runs it whole), static (one iteration per thread of the block, GPU_ThreadBlock), dynamic "
+            "(the block's threads take iterations from a shared queue, GPU_ThreadBlock_Dynamic) or guided (the same "
+            "queue, taking half of what is left of a range per round, so the batches shrink). chunk=c with dynamic or "
+            "guided takes at least c round widths per round instead of a whole range. The block comes from one place "
+            "only: the kernel doall, or the doalls inside it."
         ),
     ),
     "snapshot-reads": (

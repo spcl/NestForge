@@ -2,7 +2,7 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Move families](../move-families.md)
 
-Status: steps 1 to 3 built (`for-to-doall` with `force`, `set-schedule-cpu`, `set-schedule-gpu` without `guided`); step 4 (DaCe) is design. Written 2026-11-16 against NestForge `7a016a5` and DaCe extended `6ed7dc19e6`. The
+Status: steps 1 to 3 built (`for-to-doall` with `force`, `set-schedule-cpu`, `set-schedule-gpu`); step 4 built 2026-11-24 (DaCe extended `fb6dabf60d`: `guided` and a chunk for the GPU queue, offered by `set-schedule-gpu`). Written 2026-11-16 against NestForge `7a016a5` and DaCe extended `6ed7dc19e6`. The
 owner's decisions of 2026-11-16 are marked; everything marked "to verify" was not read in the code or run.
 
 ## Goal
@@ -77,20 +77,22 @@ team. A doall inside the kernel is a work-sharing loop over that team.
 | a doall inside the kernel | `schedule=sequential` (default) | `Sequential` | each thread runs all iterations of its own instance |
 | | `schedule=static` | `GPU_ThreadBlock` | the block's threads split the iterations evenly |
 | | `schedule=dynamic` | `GPU_ThreadBlock_Dynamic` | the block's threads take iterations from a shared queue |
-| | `schedule=guided` | missing | as dynamic, with batches that shrink |
+| | `schedule=guided` | `GPU_ThreadBlock_Dynamic`, `omp_schedule=Guided` | as dynamic, a round taking half of what is left of a range |
+| | `chunk=c` with `dynamic` or `guided` | `omp_chunk_size` | a round takes at least `c` round widths (a block's or a warp's threads) of a range instead of all of it |
 
 - `dynamic` exists on extended: `LowerDynamicThreadBlockMaps` lowers it to a thread-block map over a work queue,
-  for HIP and CUDA (DaCe PR #2732 brings the same to `main`). `guided` and a `chunk` for the queue's batch are new
-  work on DaCe extended, built there with their tests, and then offered here.
+  for HIP and CUDA (DaCe PR #2732 brings the same to `main`). `guided` and a `chunk` for the queue's batch are
+  template arguments of DaCe's `dace::DynamicMap` (extended `cb4839c8a9`), read from the map's `omp_schedule` and
+  `omp_chunk_size`.
 - With `static` on an inner doall, the kernel doall iterates over blocks and the inner doall over the block's
   threads, DaCe's own model; so `static` takes a constant extent of at most 1024 (tile first). `dynamic` keeps the
   kernel over threads: DaCe's lowering adds the thread-block map, of `compiler.cuda.dynamic_map_block_size` threads,
   and takes one-dimensional doalls only.
 - DaCe's GPU code generator takes the block from one place: the kernel's `gpu_block_size`, or its thread-block
   maps. The move refuses a `block` on a kernel whose inner doalls are shared, and the reverse; static and dynamic
-  doalls do not share a kernel.
+  doalls do not share a kernel; dynamic and guided doalls do, as both run the queue.
 - Refused: a row of a scope not placed on the GPU, a `block` of more than three sizes or 1024 threads, a doall
-  deeper than directly inside the kernel doall, and `guided`.
+  deeper than directly inside the kernel doall, and a `chunk` that is negative or goes with `static` or `sequential`.
 
 Built: `OffloadToAccelerator` resets every map under a kernel to `Sequential` (and raises on a GPU schedule it
 finds there), so the choice cannot live in the body before placement. The session keeps it per kernel and label
@@ -139,7 +141,7 @@ kernel_1 (gpu)
 7. `set-schedule-cpu` is refused on a nested doall, in a scope placed on the GPU, without a scope, and with a
    chunk under `default` (built). Test 6 (numerics on several threads) is not built: it needs a finalized build.
 8. `set-schedule-gpu` sets `gpu_block_size`, and an inner `dynamic` gives a `GPU_ThreadBlock_Dynamic` map under
-   the kernel, after which a `block` is refused; `static` on a symbolic extent and `guided` are refused; a CPU
+   the kernel, after which a `block` is refused; `static` on a symbolic extent and a chunk with `static` are refused; `guided` with `chunk=2` sets `omp_schedule` and `omp_chunk_size` on the placed map; a CPU
    kernel takes no GPU schedule (built; structure only, numerics on beverin).
 9. `list_scope_moves` shows each schedule after the move and after a new placement (built for the block).
 
@@ -147,11 +149,11 @@ kernel_1 (gpu)
 
 The four moves are listed and applied through the plugin's tools, the tree shows schedules, the record counts
 forced moves, the skill page explains when each schedule pays (uneven iterations: triangular nests, sparse rows),
-and `guided` on the GPU waits for DaCe.
+and `guided` and a chunk run on the GPU.
 
 ## Build order
 
 1. `for-to-doall` with `force`, the warning, and the record's mark.
 2. `set-schedule-cpu` and the schedule in the tree.
 3. `set-schedule-gpu`: `block`, then `static` and `dynamic` on inner doalls.
-4. DaCe extended: `guided` and a batch size for the GPU queue; then the move offers them.
+4. DaCe extended: `guided` and a batch size for the GPU queue; then the move offers them (built 2026-11-24).

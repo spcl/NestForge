@@ -24,6 +24,7 @@ to B10 are independent of it, and B13 and B14 are baselines for the study, and B
 | B13 | An LLVM-pass agent packet | the catalogue baseline of the NestForge study | medium |
 | B14 | A GEAK harness plugin | a GPU baseline from the literature | open, decide first |
 | B15 | A code agent names its build or requests the sweep | equal builds between agents that write and agents that decide | medium |
+| B16 | MLIR in the image with its CUDA runtime | GPU kernels of the MLIR and LLVM agent ([mlir-llvm-agent.md](mlir-llvm-agent.md)) | small |
 
 ## B1: the canonical form renders the distributed entry
 
@@ -302,3 +303,14 @@ right under strict mode is graded on the strict build.
 
 **Open.** Whether NestForge's own configurations may also name a build in place of the sweep, so that both kinds of
 agent hold the same two choices.
+
+## B16: MLIR in the image with its CUDA runtime
+
+**Missing.** The judge image builds MLIR on LLVM 22.1.8 for Polygeist, without `libmlir_cuda_runtime.so`. The GPU
+kernels of the MLIR and LLVM agent call its `mgpu*` functions from the host code `gpu-to-llvm` writes.
+
+**Request.** Build the image's MLIR with the CUDA runtime (`MLIR_ENABLE_CUDA_RUNNER=ON`, the `+cuda` variant of the
+Spack package) in the NVIDIA image, and install the library beside `libmlir_c_runner_utils.so`.
+
+**Tests.** In the NVIDIA image, a module with one `gpu.launch` that adds two device arrays, lowered with
+`gpu-lower-to-nvvm-pipeline` and linked against the library, runs and writes the sum.

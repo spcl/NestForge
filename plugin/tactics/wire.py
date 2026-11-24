@@ -178,11 +178,15 @@ class ApplyMove(Labeled):
         None,
         description="set-schedule-cpu (inside a CPU kernel): the OpenMP schedule of the doall (static, dynamic, "
         "guided, or default: DaCe chooses). set-schedule-gpu, on a doall directly inside a GPU kernel's doall: how the block's threads "
-        "share it (sequential: each thread runs it whole; static: one iteration per thread; dynamic: a shared queue). "
+        "share it (sequential: each thread runs it whole; static: one iteration per thread; dynamic: a shared queue; "
+        "guided: the shared queue, taking half of what is left of a range per round). "
         "dynamic or guided pays when iterations differ in cost (a triangular nest, sparse rows).",
     )
     chunk: int | None = pydantic.Field(
-        None, description="set-schedule-cpu: the iterations a thread takes at a time, e.g. 16; none: OpenMP's default."
+        None,
+        description="set-schedule-cpu: the iterations a thread takes at a time, e.g. 16; none: OpenMP's default. "
+        "set-schedule-gpu with dynamic or guided: the round widths (a block's or a warp's threads) a round takes at "
+        "least, e.g. 2; none: a whole range.",
     )
     threads: int | None = pydantic.Field(
         None, description="set-schedule-cpu: the threads that run the doall; none: all of them."

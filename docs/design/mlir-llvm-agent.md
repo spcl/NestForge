@@ -11,8 +11,9 @@ the skill draft beside it (`SKILL.md`). Nothing here is built.
 An agent rewrites a kernel by applying compiler passes one at a time, the way the NestForge agent applies moves:
 each pass is a named move with arguments, the agent sees the loops after each move, it can roll a move back, and the
 reference checks the result. The agent works in two phases on the same kernel: MLIR passes on affine and scf loops,
-then LLVM passes on the IR the fixed lowering writes. It is a baseline for the study: what an agent reaches with a
-compiler's own passes, without NestForge's moves.
+then LLVM passes on the IR the fixed lowering writes, for CPU and GPU kernels. It is a baseline for the study: what an
+agent reaches with a compiler's own passes, without NestForge's moves. The owner decided on 2026-11-24 that the
+first version covers the GPU, and that the agent is a study column on `scicomp40` only.
 
 ## What exists
 
@@ -89,7 +90,26 @@ pass string; the arguments fill the pass options.
   with its own knobs.
 
 The CPU threads come from `convert-scf-to-openmp` in the fixed lowering, as today: a `par` loop after `parallelize`
-becomes an OpenMP loop. There is no placement phase in the first version.
+becomes an OpenMP loop.
+
+### GPU kernels
+
+A kernel the program places on the GPU takes device pointers: NestForge's placement inserts the copies before and
+after the kernel (`Session.transfers`), so the MLIR route needs no copies of its own. The agent starts from the same
+CPF C++ unit a CPU kernel has, and the MLIR phase gains three moves:
+
+- `tile-parallel` `tile_sizes`: `scf-parallel-loop-tiling{parallel-loop-tile-sizes=}`. The outer loops of a tiled
+  `par` become blocks, the inner loops threads.
+- `map-to-gpu`: `gpu-map-parallel-loops`, `convert-parallel-loops-to-gpu`, `gpu-kernel-outlining`. Each mapped `par`
+  nest becomes one kernel launch. The move is refused when the kernel is placed on the CPU, and a GPU kernel with no
+  mapped loop is refused at `advance_phase`, because it would run on one GPU thread.
+- `gpu-barriers`: `gpu-eliminate-barriers`, after `copy-to-buffer` put tiles in shared memory.
+
+The fixed lowering of a GPU kernel adds `nvvm-attach-target{chip=<the target's sm> O=3}`, `convert-gpu-to-nvvm`,
+`gpu-to-llvm` and `gpu-module-to-binary{format=fatbin}`. The device code is compiled there, so the LLVM phase sees
+the host code only, and its moves are refused on a GPU kernel except `cleanup` and `inline`. The host code calls
+the `mgpu*` functions of `libmlir_cuda_runtime.so`, which the kernel's library links. The bench image builds MLIR
+without it today: request B16 in [bench-requests.md](bench-requests.md).
 
 ### Answers to the draft's open questions
 
@@ -104,7 +124,8 @@ becomes an OpenMP loop. There is no placement phase in the first version.
 | 9 | linalg and the transform dialect | Later: cgeist emits no linalg from loop code |
 | 10 | One agent or two | One agent, two phases, on NestForge's kernel units |
 
-Questions 5 and 6 (GPU) are the owner's; see the end.
+| 5 | GPU data | None to move: a GPU kernel's arguments are device pointers, placed by NestForge (owner, 2026-11-24: GPU in the first version) |
+| 6 | The CUDA runtime of MLIR | Request B16: the bench image builds MLIR with the CUDA runtime |
 
 ## Tests
 
@@ -115,21 +136,23 @@ Questions 5 and 6 (GPU) are the owner's; see the end.
   4. `rollback` after two moves gives back the IR and labels after the first;
   5. an LLVM `vectorize` with width 4 shows `vec=4x1` in the outline;
   6. a pass that fails (an option out of range) answers `failed` with the tool's message and changes nothing;
-  7. two LLVM moves with different knobs keep their own knobs (two `opt` calls).
+  7. two LLVM moves with different knobs keep their own knobs (two `opt` calls);
+  8. on a GPU target, `tile-parallel` and `map-to-gpu` on `jacobi_2d` give one kernel launch per nest, and the
+     program matches its oracle (`gpu` mark, skipped without a GPU);
+  9. `map-to-gpu` on a kernel placed on the CPU is refused, and `advance_phase` refuses a GPU kernel with no mapped
+     loop.
 - The tests need `cgeist`, `polygeist-opt` and `mlir-translate`; they skip with that reason where the machine lacks
   them, as `build_mlir_pipeline` refuses today. They run in the bench image, which builds Polygeist on LLVM 22.1.8.
 
 ## Done
 
 The plugin offers the agent as a packet beside the two baselines, the skill (`SKILL.md`, updated to these calls) is
-in `plugin/tactics/skills/`, the tests above are green in CI, and one episode on `jacobi_2d` reaches `submit`.
+in `plugin/tactics/skills/`, the tests above are green in CI, and one episode on `jacobi_2d` reaches `submit` on the
+CPU and one on an NVIDIA GPU.
 
-## Decisions for the owner
+## Decisions
 
-1. **GPU kernels (draft questions 5 and 6).** The first version is CPU only, like the two baselines. A GPU version
-   needs `gpu-map-parallel-loops`, `convert-parallel-loops-to-gpu` and the NVVM lowering, explicit copies or managed
-   memory for the arrays, and `libmlir_cuda_runtime.so` in the bench image. Recommendation: CPU only for the study,
-   and GPU when the study's GPU configurations need a compiler baseline.
-2. **Whether this agent is a study column.** It costs one more configuration per kernel. Recommendation: run it on
-   `scicomp40` only, beside the LLVM baseline (B13), and keep the raw-string MLIR baseline out of the study if the
-   budget needs a cut.
+Taken by the owner on 2026-11-24:
+
+1. The first version covers CPU and GPU kernels (draft questions 5 and 6).
+2. The agent is a study column on `scicomp40` only, beside the LLVM baseline (B13).

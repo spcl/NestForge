@@ -278,14 +278,30 @@ def test_a_static_doall_over_one_tile_shares_it_among_the_blocks_threads(tmp_pat
     session, first, _, kernel, inner = tiled_on_gpu(tmp_path)
 
     done = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="static")
-    guided = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="guided")
+    chunked = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="static", chunk=2)
 
     assert done.status is MoveStatus.APPLIED, done
     maps = placed_maps(session, first)
     assert (maps[kernel].schedule, maps[inner].schedule) == (
         dace.ScheduleType.GPU_Device, dace.ScheduleType.GPU_ThreadBlock
     )  # fmt: skip
-    assert (guided.status, guided.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), guided
+    assert (chunked.status, chunked.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), "a chunk needs a queue"
+
+
+def test_a_guided_doall_with_a_chunk_is_a_dynamic_thread_block_map_that_halves_its_batches(tmp_path: Path) -> None:
+    session, first, second, _, inner = tiled_on_gpu(tmp_path)
+
+    negative = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="guided", chunk=-1)
+    done = session.apply_move("set-schedule-gpu", [inner], scope=first, schedule="guided", chunk=2)
+    session.apply_move("tile-doall", only_move(session, "tile-doall", second), tile_sizes=[32], scope=second)
+
+    assert (negative.status, negative.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), negative
+    assert (done.status, done.reason) == (MoveStatus.APPLIED, "GPU schedule guided, chunk=2"), done
+    placed = placed_maps(session, first)[inner]
+    assert placed.schedule == dace.ScheduleType.GPU_ThreadBlock_Dynamic
+    assert (placed.omp_schedule, placed.omp_chunk_size) == (dace.OMPScheduleType.Guided, 2)
+    (again,) = [m for m in session.list_moves("set-schedule-gpu", scope=first) if m.labels == (inner,)]
+    assert again.current == "guided, chunk=2"
 
 
 def test_a_block_beyond_the_third_dimensions_limit_is_refused(tmp_path: Path) -> None:

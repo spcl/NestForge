@@ -136,6 +136,7 @@ from tactics.stages.moves import (
     DEFAULT_ISA,
     DEVICE_KINDS,
     FORCED_LOOP_TO_MAP,
+    GPU_QUEUE_SCHEDULES,
     INLINE_LIBRARY,
     MOVE_SHAPES,
     PERSISTENT_KERNEL,
@@ -1648,7 +1649,9 @@ class Session:
         for label, choice in held.items():  # in the order they were made, each checked against those kept before it
             if label not in rows:
                 continue
-            again = plan_set_schedule_gpu(rows[label], choice.block, None if choice.block else choice.schedule, kept)
+            schedule = None if choice.block else choice.schedule
+            chunk = choice.chunk if choice.schedule in GPU_QUEUE_SCHEDULES else None
+            again = plan_set_schedule_gpu(rows[label], choice.block, schedule, kept, chunk)
             if again == choice:
                 kept[label] = choice
         self.gpu_choices = {**self.gpu_choices, scope: kept}
@@ -1679,7 +1682,7 @@ class Session:
         return None
 
     def set_gpu_schedule(
-        self, names: tuple[str, ...], scope: str, block: Sequence[int], schedule: str | None
+        self, names: tuple[str, ...], scope: str, block: Sequence[int], schedule: str | None, chunk: int | None = None
     ) -> MoveResult:
         """``set-schedule-gpu`` on the doall ``names`` of the GPU kernel ``scope``: the choice is kept per kernel and
         set on its placed body, now and after every later placement, which resets thread blocks and schedules."""
@@ -1689,7 +1692,7 @@ class Session:
         if isinstance(rows, MoveResult):
             return rows
         held = self.gpu_choices.get(scope, {})
-        choice = plan_set_schedule_gpu(rows[0], block, schedule, held)
+        choice = plan_set_schedule_gpu(rows[0], block, schedule, held, chunk)
         if not isinstance(choice, GpuChoice):
             return illegal(kind, names, choice)
         with self.atomic():
@@ -2078,7 +2081,7 @@ class Session:
             return self.relayout(operation or {})
         if kind == SET_SCHEDULE_GPU:
             assert scope is not None, "scope_refusal requires one"
-            return self.set_gpu_schedule(tuple(names), scope, tile_sizes, schedule)
+            return self.set_gpu_schedule(tuple(names), scope, tile_sizes, schedule, chunk)
         structured, device = self.move_programs(scope)
         target = device if kind in DEVICE_KINDS else structured
         rows = self.named_rows(kind, names, None if scope is None else tree_rows(target))
