@@ -159,8 +159,8 @@ def request_range(state: SDFGState, end: nodes.Node, edge: MultiConnectorEdge) -
     return container(state, end, name), None if viewed else edge.data.subset
 
 
-#: A request range a start's request is stored in, and the state that stores it there.
-type StoredRequest = tuple[RequestRange, SDFGState]
+#: A request range a start's request is stored in, the state that stores it there, and the access node it writes.
+type StoredRequest = tuple[RequestRange, SDFGState, nodes.AccessNode]
 
 
 def written_requests(sdfg: dace.SDFG, state: SDFGState, start: nodes.Node) -> list[StoredRequest]:
@@ -168,7 +168,7 @@ def written_requests(sdfg: dace.SDFG, state: SDFGState, start: nodes.Node) -> li
     own state), and every element a code node or a copy then stores it into, transitively, as :func:`forwarded`
     follows it by container."""
     reached = forwarded(sdfg, requests_of(state, start, written=True))
-    stored = [(request_range(state, e.dst, e), state) for e in state.out_edges(start) if e.src_conn == REQUEST]
+    stored = [(request_range(state, e.dst, e), state, e.dst) for e in state.out_edges(start) if e.src_conn == REQUEST]
     for other in sdfg.states():
         for edge in other.edges():
             if edge.data.is_empty() or not isinstance(edge.dst, nodes.AccessNode) or comm_class(edge.src) is not None:
@@ -185,7 +185,7 @@ def written_requests(sdfg: dace.SDFG, state: SDFGState, start: nodes.Node) -> li
                 name, elements = request_range(other, edge.dst, edge)
                 if source is not None and edge.data.data == source:
                     elements = edge.data.dst_subset  # a copy names the source; the destination's elements differ
-                stored.append(((name, elements), other))
+                stored.append(((name, elements), other, edge.dst))
     return stored
 
 
@@ -281,19 +281,32 @@ def control_flow(sdfg: dace.SDFG) -> FlowEdges:
     return successors
 
 
-def completing(sdfg: dace.SDFG, written: list[StoredRequest]) -> dict[int, frozenset[str]]:
-    """Each state (by ``id``) holding a ``WAIT`` that reads an element of ``written``, and the request containers
-    through which it does: once a path has stored the request in one of them, the wait there completes it."""
-    found: dict[int, frozenset[str]] = {}
+#: What :func:`completing` finds in a state: the request containers through which a wait there completes the
+#: request, and those of them the same state stores the request in before that wait reads it.
+type Completion = tuple[frozenset[str], frozenset[str]]
+
+
+def completing(sdfg: dace.SDFG, written: list[StoredRequest]) -> dict[int, Completion]:
+    """Each state (by ``id``) holding a ``WAIT`` that reads an element of ``written``, with its :data:`Completion`:
+    once a path has stored the request in one of the containers, the wait there completes it, and a store in the
+    wait's own state that feeds the wait counts as stored."""
+    found: dict[int, Completion] = {}
     for state in sdfg.states():
         for node in state.nodes():
             if comm_class(node) is not CommClass.WAIT:
                 continue
             through = frozenset(
-                w[0] for w, _ in written for r in read_requests(state, node) if same_request(sdfg, w, r)
+                w[0] for w, _, _ in written for r in read_requests(state, node) if same_request(sdfg, w, r)
             )
-            if through:
-                found[id(state)] = found.get(id(state), frozenset()) | through
+            if not through:
+                continue
+            ahead = frozenset(
+                w[0]
+                for w, home, access in written
+                if home is state and w[0] in through and node in set(state.bfs_nodes(access))
+            )
+            known, early = found.get(id(state), (frozenset(), frozenset()))
+            found[id(state)] = (known | through, early | ahead)
     return found
 
 
@@ -309,7 +322,7 @@ def paths_between(
         return []
     successors = control_flow(sdfg)
     stores: dict[int, frozenset[str]] = {}
-    for (name, _), state in written:
+    for (name, _), state, _ in written:
         stores[id(state)] = stores.get(id(state), frozenset()) | {name}
     waits = completing(sdfg, written)
     nodes_of: dict[PathKey, FlowNode] = {}
@@ -322,7 +335,8 @@ def paths_between(
         key = pending.pop()
         _, stepped, stored = key
         for after, step in successors.get(key[0], []):
-            if waits.get(id(after), frozenset()) & stored:
+            through, early = waits.get(id(after), (frozenset(), frozenset()))
+            if through & (stored | early):
                 if after is wait:
                     arrivals.append(key)
                 continue  # another wait completes the request first
@@ -363,7 +377,7 @@ def starts_of(sdfg: dace.SDFG, state: SDFGState, wait: nodes.Node) -> list[tuple
             if comm_class(node) is not CommClass.START:
                 continue
             written = written_requests(sdfg, other, node)
-            if not any(same_request(sdfg, w, r) for w, _ in written for r in reads):
+            if not any(same_request(sdfg, w, r) for w, _, _ in written for r in reads):
                 continue
             if paths_between(sdfg, other, state, written) is not None:
                 found.append((other, node))

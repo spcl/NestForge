@@ -196,6 +196,33 @@ def pipelined_rows(
 
 
 @dace.program
+def jacobi_rows(
+    u: dace.float64[K + 2, N], v: dace.float64[K + 2, N], res: dace.float64[T], left: dace.int32, right: dace.int32
+) -> None:
+    """The textbook 2D Jacobi split by rows: the halo rows travel while the interior is updated, the boundary rows are
+    updated after the wait, and the residual is reduced every step. The frontend stores each request in ``req``
+    through a copy, which ``lib-into`` may join to the state of the wait."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    for t in range(T):
+        MPI.COMM_WORLD.Isend(u[1], left, 0, req[0])
+        MPI.COMM_WORLD.Isend(u[K], right, 1, req[1])
+        MPI.COMM_WORLD.Irecv(u[0], left, 1, req[2])
+        MPI.COMM_WORLD.Irecv(u[K + 1], right, 0, req[3])
+        for i, j in dace.map[2:K, 1 : N - 1]:
+            v[i, j] = 0.25 * (u[i - 1, j] + u[i + 1, j] + u[i, j - 1] + u[i, j + 1])
+        MPI.Request.Waitall(req)
+        for j in dace.map[1 : N - 1]:
+            v[1, j] = 0.25 * (u[0, j] + u[2, j] + u[1, j - 1] + u[1, j + 1])
+            v[K, j] = 0.25 * (u[K - 1, j] + u[K + 1, j] + u[K, j - 1] + u[K, j + 1])
+        res[t] = 0.0
+        for i, j in dace.map[1 : K + 1, 1 : N - 1]:
+            res[t] += (v[i, j] - u[i, j]) * (v[i, j] - u[i, j])
+        MPI.COMM_WORLD.Allreduce(MPI.IN_PLACE, res[t : t + 1], op=MPI.SUM)
+        for i, j in dace.map[1 : K + 1, 1 : N - 1]:
+            u[i, j] = v[i, j]
+
+
+@dace.program
 def residual_loop(a: dace.float64[N], r: dace.float64[T], s: dace.float64[N]) -> None:
     """A relaxation whose residual every rank reduces each step, with an update independent of the residual. The
     reduction reads the step's slice ``r[t : t + 1]`` in place: canonicalization leaves no view in front of it."""
@@ -303,6 +330,17 @@ def halo_steps_inputs(rank: int, size: int) -> dict[str, object]:
     return {"c": seeded(700 + rank, LENGTH), "T": STEPS} | halo_in_place_inputs(rank, size)
 
 
+def jacobi_rows_inputs(rank: int, size: int) -> dict[str, object]:
+    return {
+        "u": seeded(rank, ROWS + 2, LENGTH),
+        "v": np.zeros((ROWS + 2, LENGTH)),
+        "res": np.zeros(STEPS),
+        "K": ROWS,
+        "N": LENGTH,
+        "T": STEPS,
+    } | neighbors(rank, size)
+
+
 def residual_inputs(rank: int, size: int) -> dict[str, object]:
     return {"a": seeded(rank, LENGTH), "r": np.zeros(STEPS), "s": np.zeros(LENGTH), "N": LENGTH, "T": STEPS}
 
@@ -339,6 +377,7 @@ FIXTURES = {
     "two_exchanges": Fixture(two_exchanges, two_exchanges_inputs, ("ghost_a", "ghost_x", "b")),
     "halo_steps": Fixture(halo_steps, halo_steps_inputs, ("ap", "b", "c")),
     "pipelined_rows": Fixture(pipelined_rows, ring_inputs, ("b", "d")),
+    "jacobi_rows": Fixture(jacobi_rows, jacobi_rows_inputs, ("u", "v", "res")),
     "residual_loop": Fixture(residual_loop, residual_inputs, ("a", "r", "s")),
     "ring": Fixture(ring, ring_inputs, ("b", "d")),
     "redistribute": Fixture(redistribute, redistribute_inputs, ("Sigma",)),

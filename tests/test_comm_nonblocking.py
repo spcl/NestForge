@@ -2,16 +2,16 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Nonblocking communication patterns (``docs/design/comm-nodes.md``, sections 1 to 4), as the frontend builds them
 and canonicalization leaves them: one ``Wait`` per request, two exchanges whose waits complete in the opposite order
-to their starts, a halo exchange every time step, exchanges pre-posted one step ahead, and two programs that break the rules of a request in flight. Each
-wait must complete exactly the starts whose requests it reads, a wait moves only where nothing touches what is in
-flight, every move the session lists for a row applies, and the in-flight check (I2) names a program that writes a
-sent buffer or reads a received one before its wait. Nothing here runs MPI: ``tests/test_comm_ranks.py`` runs the
-same fixtures on ranks."""
+to their starts, a halo exchange every time step, exchanges pre-posted one step ahead, a row-split Jacobi solver, and
+three programs that break the rules of a request in flight. Each wait must complete exactly the starts whose requests
+it reads, a wait moves only where nothing touches what is in flight, every move the session lists for a row applies,
+and the in-flight check (I2) names a program that writes a sent buffer or reads a received one before its wait.
+Nothing here runs MPI: ``tests/test_comm_ranks.py`` runs the same fixtures on ranks."""
 
 import dace
 import pytest
 from comm_programs import overwrite_in_flight, read_before_wait, read_last_step_before_wait
-from comm_rank_programs import halo_steps, halo_waits, pipelined_rows, two_exchanges
+from comm_rank_programs import halo_steps, halo_waits, jacobi_rows, pipelined_rows, two_exchanges
 from dace.frontend.python.parser import DaceProgram
 from dace.libraries.comm.nodes.node import CommNode
 from dace.sdfg import nodes
@@ -30,7 +30,7 @@ from tactics.ir.comm import (
 )
 from tactics.records import MoveStatus
 from tactics.session import Session
-from tactics.stages.lib_motion import LIB_AFTER, LIB_BEFORE, accessed, in_flight_refusal, plan_lib_motion
+from tactics.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, accessed, in_flight_refusal, plan_lib_motion
 
 #: The nonblocking fixtures that follow the rules, by name.
 FIXTURES: dict[str, DaceProgram] = {
@@ -38,6 +38,7 @@ FIXTURES: dict[str, DaceProgram] = {
     "two_exchanges": two_exchanges,
     "halo_steps": halo_steps,
     "pipelined_rows": pipelined_rows,
+    "jacobi_rows": jacobi_rows,
 }
 
 
@@ -230,3 +231,29 @@ def test_a_path_around_the_loop_compares_what_the_last_step_received_by_containe
     assert between is not None, "the receive of a step reaches the wait of the next"
     readers = [stepped for state, stepped in between if "b" in accessed(state)[0]]
     assert readers == [True], between
+
+
+def test_a_request_stored_in_the_state_of_its_wait_is_complete_there() -> None:
+    """The frontend stores each request in ``req`` through a copy; ``lib-into`` may join the last copy to the state of
+    the ``Waitall``, which then stores the request before it reads it. The wait still completes all four starts, and
+    the boundary update after it is not in flight."""
+    session = canonical(jacobi_rows)
+    rows = session.row_index()
+    (wait_state,) = {
+        id(s): s for n, s in session.sdfg.all_nodes_recursive() if comm_class(n) is CommClass.WAIT
+    }.values()
+    joins = [
+        move
+        for move in session.list_moves(LIB_INTO)
+        if rows[move.labels[-1]][0] is wait_state and not isinstance(rows[move.labels[0]][0], CommNode)
+    ]
+    assert joins, "a request copy may join the state of the wait"
+
+    for move in joins:
+        result = session.apply_move(move.kind, list(move.labels))
+        assert result.status is MoveStatus.APPLIED, (move, result.reason)
+        sdfg = session.sdfg
+        ((wait, state),) = [(n, s) for n, s in sdfg.all_nodes_recursive() if comm_class(n) is CommClass.WAIT]
+        assert len(starts_of(sdfg, state, wait)) == 4
+        assert in_flight_refusal(sdfg) is None
+        assert session.undo().status is MoveStatus.APPLIED

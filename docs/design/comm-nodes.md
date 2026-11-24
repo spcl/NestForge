@@ -75,7 +75,8 @@ store their request in an element the `WAIT` reads (`Wait(req[2])` completes onl
 directly or through the copies the frontend adds, and that reach the `WAIT` along the control flow with the request
 stored where it reads and no other `WAIT` completing it first (`control_flow`, `paths_between` in
 `tactics/ir/comm.py`). A start in a loop reaches a wait at the head of the next step, and a start before a loop
-reaches a wait after it through a zero-trip loop. When an element cannot be told (through a view, or an index the
+reaches a wait after it through a zero-trip loop. A copy in the `WAIT`'s own state that stores the request before
+the `WAIT` reads it (`lib-into` may join it there) counts as stored. When an element cannot be told (through a view, or an index the
 facts do not decide), every `START` that writes the array and reaches the `WAIT` counts. The answer may then hold
 too many rows, which keeps more buffers in flight and is safe.
 
