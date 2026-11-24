@@ -1,0 +1,9 @@
+# The pass-move baseline: the agent applies named MLIR and LLVM passes one at a time, not NestForge's moves; this text
+# replaces NestForge's.
+agent:
+  set:
+    nestforge: {text: "file:passes/moves.md"}
+    end_to_end: {enabled: false}
+task:
+  set:
+    nestforge: {text: "file:passes/moves.md"}

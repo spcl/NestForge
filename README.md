@@ -35,6 +35,8 @@ kernels, and the agent then writes and tunes them one at a time.
 `request_transformation`, which records a transformation no move offers ([design](docs/design/transformation-requests.md)).
 `nestforge-llvm` and `nestforge-mlir` are the baselines that choose compiler passes instead of moves: the same program,
 entry and library, every kernel built through the agent's `opt -passes=` or `polygeist-opt --pass-pipeline=` pipeline.
+`nestforge-passes` is the pass-move agent: named MLIR, then LLVM, passes applied one at a time, with the loops after
+each move ([design](docs/design/mlir-llvm-agent.md)).
 The skill page ([skills/nestforge](plugin/tactics/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
 tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
 

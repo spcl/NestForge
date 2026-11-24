@@ -65,6 +65,7 @@ The packets:
 | `nestforge-subagents` | the same | As `nestforge-full`, with one `kernel-optimizer` subagent per kernel. Each has its own context. |
 | `nestforge-requests` | `moves` | As `nestforge`, and the agent may ask for a transformation no move offers (`request_transformation`). |
 | `nestforge-llvm`, `nestforge-mlir` | none | Baselines: no move, no written code; every kernel built through the agent's LLVM (`set_llvm_passes`) or MLIR (`set_mlir_passes`) pass pipeline, from the canonical form with every move family off. |
+| `nestforge-passes` | none | Baseline: named MLIR, then LLVM, pass moves applied one at a time (`list_pass_moves`, `apply_pass_move`, `view_ir`, `advance_pass_phase`), CPU kernels; rollback takes a move back. |
 
 The subagent file lists no `tools` on purpose: the harnesses name tools differently, and the closing rules hold for
 every caller of the route. The agent focuses each kernel before it starts that kernel's subagent; a

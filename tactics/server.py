@@ -197,6 +197,10 @@ CALLS: dict[str, Callable[..., object]] = {
     "tune_move": Session.tune_move,
     "set_llvm_passes": lambda session, passes: session.set_pipeline("llvm", passes),
     "set_mlir_passes": lambda session, pipeline: session.set_pipeline("mlir", pipeline),
+    "view_ir": lambda session, loops: session.view_ir(tuple(loops)),
+    "list_pass_moves": Session.list_pass_moves,
+    "apply_pass_move": lambda session, kind, arguments: session.apply_pass_move(kind, arguments),
+    "advance_pass_phase": Session.advance_pass_phase,
     "request_transformation": lambda session, name, description, rows, examples: session.request_transformation(
         name,
         description,
@@ -239,6 +243,8 @@ CHANGING = frozenset(
         "get_performance",
         "set_llvm_passes",
         "set_mlir_passes",
+        "apply_pass_move",
+        "advance_pass_phase",
     }
 )
 

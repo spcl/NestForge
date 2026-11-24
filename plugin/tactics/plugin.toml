@@ -64,6 +64,16 @@ overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml
 skills = []
 env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all" }
 
+# The pass-move agent (docs/design/mlir-llvm-agent.md): named MLIR, then LLVM, passes one at a time, with the loops
+# after each move; a study column on scicomp40. CPU kernels only until the bench image has MLIR's CUDA runtime (B16).
+[packets.nestforge-passes]
+extends = "nestforge"
+name = "MLIR and LLVM pass moves (baseline)"
+tools = ["get_cpf", "view_tree", "view_ir", "list_pass_moves", "apply_pass_move", "advance_pass_phase", "get_performance", "applied_moves", "finalize", "profile", "score", "submit"]
+overlays = ["nestforge:prompt/overlay.yaml", "nestforge:prompt/no-cpp-guide.yaml", "nestforge:prompt/passes-moves.yaml"]
+skills = []
+env = { JUDGE_INPUT_MODE = "library", HPCAGENT_BENCH_NATIVE_TOOLS = "Read", NESTFORGE_DISABLED_FAMILIES = "all" }
+
 # Every phase but placement is the agent's: it also sets scopes, writes kernels in C++ and tunes their builds.
 [packets.nestforge-full]
 extends = "nestforge"

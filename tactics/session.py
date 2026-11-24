@@ -35,7 +35,27 @@ from dace.transformation.passes.megakernel.discovery import linear_chain
 from relayout.ops import Operation
 
 from tactics.build.arena import TIMED_REPS
-from tactics.build.pipelines import build_llvm_pipeline, build_mlir_pipeline, pipeline_syntax_error
+from tactics.build.pass_moves import (
+    KINDS,
+    PassProgram,
+    build_pass_moves,
+    llvm_after,
+    llvm_outline,
+    made_move,
+    mlir_after,
+    mlir_outline,
+    outline_text,
+    parsed,
+    registered,
+    spec_text,
+)
+from tactics.build.pipelines import (
+    PipelineError,
+    build_llvm_pipeline,
+    build_mlir_pipeline,
+    pipeline_syntax_error,
+    sibling,
+)
 from tactics.build.sdfg import PERSISTENT_MIN_BYTES, force_register_arrays, make_persistent
 from tactics.build.toolchain import SymbolValue, parse_params, raw_signature
 from tactics.corpus.translate import Prepared, prepare
@@ -398,7 +418,9 @@ def marked_persistent(tree: str, loops: frozenset[tuple[str, str]]) -> str:
 
 
 #: The pass pipelines :meth:`Session.apply_pipeline` builds through, by the IR they run on.
-PIPELINES = {"llvm": build_llvm_pipeline, "mlir": build_mlir_pipeline}
+#: The kind of :attr:`Session.pipeline` that holds the MLIR and LLVM agent's moves (:mod:`tactics.build.pass_moves`).
+PASS_MOVES = "moves"
+PIPELINES = {"llvm": build_llvm_pipeline, "mlir": build_mlir_pipeline, PASS_MOVES: build_pass_moves}
 #: The compiler of a pipeline build: its IR is LLVM's, so it is clang.
 PIPELINE_COMPILER = "clang++"
 #: The FP mode a pipeline build is checked at: its passes decide the rounding, so the gate is the strict one.
@@ -2788,6 +2810,110 @@ class Session:
             self.pipeline = (ir, pipeline)
 
         return self.program_change(kind, f"every kernel builds through {pipeline}", change)
+
+    # The MLIR and LLVM agent (docs/design/mlir-llvm-agent.md): passes as moves, kept as the "moves" pipeline
+
+    def pass_program(self) -> PassProgram:
+        """The MLIR and LLVM moves applied so far and the agent's phase."""
+        if self.pipeline is not None and self.pipeline[0] == PASS_MOVES:
+            return parsed(self.pipeline[1])
+        return PassProgram()
+
+    def pass_units(self) -> dict[str, Path]:
+        """Each CPU kernel's CPF unit, as the moves start from it: on a trial when the program has no kernels yet."""
+        session = self
+        if not self.kernels():
+            session = self.trial()
+            session.default_scopes()
+        return {
+            name: session.default_kernel(name).unit
+            for name, ext in session.kernels().items()
+            if kernel_device(ext) == "cpu"
+        }
+
+    def pass_ir(self, program: PassProgram, folder: Path) -> dict[str, str]:
+        """Each CPU kernel's IR after ``program``'s moves, MLIR in the MLIR phase, LLVM after: built in ``folder``.
+
+        :raises PipelineError: A step failed, with its output."""
+        compiler = shutil.which(PIPELINE_COMPILER) or PIPELINE_COMPILER
+        out: dict[str, str] = {}
+        for name, unit in self.pass_units().items():
+            copy_of = folder / name / unit.name
+            copy_of.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy(unit, copy_of)
+            if program.phase == "mlir":
+                out[name] = mlir_after(copy_of, compiler, program.of("mlir")).read_text()
+            else:
+                out[name] = llvm_after(copy_of, compiler, program).read_text()
+        return out
+
+    def list_pass_moves(self) -> str:
+        """The moves of the agent's phase this machine's tools run, with their arguments and the pass each runs."""
+        compiler = shutil.which(PIPELINE_COMPILER) or PIPELINE_COMPILER
+        phase = self.pass_program().phase
+        lines = [f"phase {phase}"]
+        for kind, spec in KINDS[phase].items():
+            if not registered(compiler, phase, spec.passes):
+                continue
+            takes = [name for name, _ in spec.options] + [name for name, _ in spec.knobs if name]
+            arguments = f" ({', '.join(takes)})" if takes else ""
+            lines.append(f"{kind}{arguments}: {spec.passes}{'; ' + spec.help if spec.help else ''}")
+        return "\n".join(lines)
+
+    def apply_pass_move(self, kind: str, arguments: Mapping[str, object] | None = None) -> MoveResult:
+        """Append the move ``kind`` of the agent's phase: refused when it changes no kernel's IR or a tool fails on
+        it, with the tool's output. ``rollback`` takes the last move or phase switch back."""
+        if kind == ROLLBACK:
+            return self.undo()
+        program = self.pass_program()
+        move = made_move(program.phase, kind, dict(arguments or {}))
+        if isinstance(move, str):
+            return illegal(kind, (), Refused(move, Refusal.ARGUMENT))
+        after = PassProgram(program.phase, (*program.moves, move))
+        with tempfile.TemporaryDirectory(dir=self.work_dir) as scratch:
+            try:
+                before_ir = self.pass_ir(program, Path(scratch) / "before")
+                after_ir = self.pass_ir(after, Path(scratch) / "after")
+            except PipelineError as err:
+                return illegal(kind, (), Refused(f"failed: {err}", Refusal.ARGUMENT))
+        if before_ir == after_ir:
+            return illegal(kind, (), Refused(f"no change: {move.text()} left every kernel as it was", Refusal.ARGUMENT))
+
+        def change() -> None:
+            self.pipeline = (PASS_MOVES, spec_text(after))
+
+        return self.program_change(f"{program.phase}-{kind}", f"{move.text()} {' '.join(move.knobs())}".strip(), change)
+
+    def advance_pass_phase(self) -> MoveResult:
+        """From the MLIR moves to the LLVM moves; the MLIR moves are closed after it."""
+        program = self.pass_program()
+        if program.phase == "llvm":
+            return illegal("advance-pass-phase", (), Refused("the LLVM phase is the last one", Refusal.ARGUMENT))
+
+        def change() -> None:
+            self.pipeline = (PASS_MOVES, spec_text(PassProgram("llvm", program.moves)))
+
+        return self.program_change("advance-pass-phase", "LLVM moves from now on", change)
+
+    def view_ir(self, loops: Sequence[str] = ()) -> str:
+        """One row per loop of every CPU kernel after the moves so far: ``for``/``sfor``/``par`` rows of the MLIR
+        phase with their bounds, ``loop`` rows of the LLVM phase with their header block and vector width. ``loops``
+        names rows whose IR is printed too (the whole function in the LLVM phase)."""
+        program = self.pass_program()
+        compiler = shutil.which(PIPELINE_COMPILER) or PIPELINE_COMPILER
+        parts = []
+        with tempfile.TemporaryDirectory(dir=self.work_dir) as scratch:
+            for name, ir in self.pass_ir(program, Path(scratch)).items():
+                if program.phase == "mlir":
+                    rows = mlir_outline(ir)
+                else:
+                    path = Path(scratch) / name / "view.ll"
+                    path.write_text(ir)
+                    rows = llvm_outline(path, sibling(compiler, "opt") or "opt")
+                parts.append(f"{name} ({program.phase}):\n{outline_text(rows)}")
+                if any(label in loops for label, _, _ in rows):
+                    parts.append(ir)
+        return "\n\n".join(parts)
 
     def kernel_verdict(self, name: str, src: KernelSource, archive: Path, reps: int, fp_mode: str) -> KernelVerdict:
         """``archive`` against the kernel's oracle, unchecked when the oracle has no value for a symbol it takes."""

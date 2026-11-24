@@ -121,6 +121,20 @@ class SetMlirPasses(Args):
     )
 
 
+class ViewIr(Args):
+    loops: list[str] = pydantic.Field(
+        default_factory=list, description="Rows of the outline whose IR to print too, e.g. for0 or loop1."
+    )
+
+
+class ApplyPassMove(Args):
+    kind: str = pydantic.Field(description="A move list_pass_moves lists, or rollback to take the last change back.")
+    arguments: dict[str, str | int | bool | list[int]] = pydantic.Field(
+        default_factory=dict,
+        description='The move\'s arguments as list_pass_moves names them, e.g. {"sizes": [32, 32]}.',
+    )
+
+
 class ApplyMoves(Args):
     moves: list["ApplyMove"] = pydantic.Field(
         min_length=1, description="The moves in order, each as apply_move takes it (labels as the tree has them then)."
@@ -399,6 +413,32 @@ TOOLS: dict[str, ToolDef] = {
         "Build every kernel through this MLIR pass pipeline (polygeist-opt --pass-pipeline= syntax) on the affine MLIR "
         "cgeist makes of its C++, then a fixed lowering to LLVM. The syntax is checked now; get_performance checks the "
         "results. A second call replaces the pipeline.",
+    ),
+    "view_ir": ToolDef(
+        phases(Phase.ANY),
+        ViewIr,
+        "One row per loop of every kernel after your pass moves: for<n> (affine), sfor<n> (scf) and par<n> (parallel) "
+        "with their bounds in the MLIR phase; loop<n> with its header block and vec=W in the LLVM phase. loops names "
+        "rows whose IR is printed too.",
+        Effect.READ,
+    ),
+    "list_pass_moves": ToolDef(
+        phases(Phase.ANY),
+        NoArgs,
+        "The pass moves of your phase (MLIR first, then LLVM), their arguments and the pass each runs.",
+        Effect.READ,
+    ),
+    "apply_pass_move": ToolDef(
+        phases(Phase.ANY),
+        ApplyPassMove,
+        "Append one pass move to every kernel's pipeline. Answers applied, or refused with no change (the IR came "
+        "out identical) or failed (the tool's output); a refused move records nothing. kind rollback takes the last "
+        "change back. get_performance checks and times the result.",
+    ),
+    "advance_pass_phase": ToolDef(
+        phases(Phase.ANY),
+        NoArgs,
+        "From the MLIR moves to the LLVM moves, on the IR the fixed lowering writes; the MLIR moves are closed after it.",
     ),
     "request_transformation": ToolDef(
         phases(Phase.ANY),

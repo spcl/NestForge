@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.1.1 (unreleased)
+
+### Added
+
+- **Pass-move agent** (`nestforge-passes`, [design](docs/design/mlir-llvm-agent.md)): MLIR moves on the affine loops
+  Polygeist raises from each CPU kernel, then LLVM moves on the IR the fixed lowering writes, one named pass at a
+  time; `view_ir` shows the loops after each move, a move that changes nothing or fails is refused, and rollback takes
+  a move back. GPU kernels wait on the bench image's MLIR CUDA runtime (bench request B16).
+
+### Fixed
+
+- `set_scope` on a solver's step state left a scalar the kernel takes read by an interstate edge (#111).
+- `set-schedule-gpu` with a block shorter than the doall's rank pads it with ones, as CUDA reads `dim3` (#112).
+- `run-on-gpu-persistent` sets the megakernel's block size on the loops it keeps, so the render no longer conflicts
+  with their thread-block maps (#113).
+- `srad`'s default program builds again: CPF declared no `tmp61` in its loop kernel; fixed in DaCe extended 1.0.1,
+  which tactics now requires (#114).
+
+### Changed
+
+- `list_moves` copies only the containers a candidate's scope touches when it probes snapshot reads: the CloudSC
+  listing takes about a fifth of its former time.
+- The cleanup after a move leaves out DaCe extended 1.0.1's `ForwardCopyMaps`, which would undo the snapshot copies
+  a move makes; canonicalization keeps it.
+- CI runs in about half the time: duplicate and low-value tests merged or removed, end-to-end emitter checks cut to
+  the kernels that cover every emitter branch.
+
 ## 0.1.0 (2026-11-23)
 
 The first release, published on PyPI as `tactics` (formerly NestForge). Tactics lets an agent optimize a whole DaCe

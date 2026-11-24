@@ -67,12 +67,16 @@ RECORD = f"{plugin_record.PLUGIN}.json"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
-#: Tools only one packet of its own serves, never nestforge-full: transformation requests (E6) and the LLVM and MLIR
-#: baselines, whose agents choose passes instead of moves.
+#: Tools only one packet of its own serves, never nestforge-full: transformation requests (E6) and the LLVM, MLIR and
+#: pass-move baselines, whose agents choose passes instead of moves.
 PACKET_OWN_TOOLS = {
     "request_transformation": "nestforge-requests",
     "set_llvm_passes": "nestforge-llvm",
     "set_mlir_passes": "nestforge-mlir",
+    "view_ir": "nestforge-passes",
+    "list_pass_moves": "nestforge-passes",
+    "apply_pass_move": "nestforge-passes",
+    "advance_pass_phase": "nestforge-passes",
 }
 #: The device slot a fake judge hands out.
 SLOT = DeviceSlot("cpu", 3)
@@ -311,6 +315,8 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
         "applied_moves",
         "get_work_depth",
         "request_transformation",
+        "view_ir",
+        "list_pass_moves",
     }
     assert hints["write_kernel"].destructive and not hints["apply_move"].destructive
 
