@@ -149,7 +149,7 @@ def forwarded(sdfg: dace.SDFG, names: frozenset[str]) -> frozenset[str]:
 
 
 #: An element range of a request container, or ``None`` where it cannot be told (through a view).
-RequestRange = tuple[str, subsets.Subset | None]
+type RequestRange = tuple[str, subsets.Subset | None]
 
 
 def request_range(state: SDFGState, end: nodes.Node, edge: MultiConnectorEdge) -> RequestRange:
@@ -160,7 +160,7 @@ def request_range(state: SDFGState, end: nodes.Node, edge: MultiConnectorEdge) -
 
 
 #: A request range a start's request is stored in, and the state that stores it there.
-StoredRequest = tuple[RequestRange, SDFGState]
+type StoredRequest = tuple[RequestRange, SDFGState]
 
 
 def written_requests(sdfg: dace.SDFG, state: SDFGState, start: nodes.Node) -> list[StoredRequest]:
@@ -215,11 +215,14 @@ class Junction:
         self.label = label
 
 
+#: A point of a path in :func:`paths_between`: a node by ``id``, whether a loop stepped, and the containers that hold
+#: the request there.
+type PathKey = tuple[int, bool, frozenset[str]]
 #: A node of :func:`control_flow`: a state, or a junction between states.
-FlowNode = SDFGState | Junction
+type FlowNode = SDFGState | Junction
 #: The edges of :func:`control_flow` out of each node, by ``id``: the node they lead to, and whether the edge steps a
 #: loop (its back edge), after which the loop's variable holds another value.
-FlowEdges = dict[int, list[tuple[FlowNode, bool]]]
+type FlowEdges = dict[int, list[tuple[FlowNode, bool]]]
 
 
 def control_flow(sdfg: dace.SDFG) -> FlowEdges:
@@ -309,13 +312,12 @@ def paths_between(
     for (name, _), state in written:
         stores[id(state)] = stores.get(id(state), frozenset()) | {name}
     waits = completing(sdfg, written)
-    Key = tuple[int, bool, frozenset[str]]
-    nodes_of: dict[Key, FlowNode] = {}
-    parents: dict[Key, list[Key]] = {}
-    arrivals: list[Key] = []
-    first: Key = (id(start), False, stores.get(id(start), frozenset()))
+    nodes_of: dict[PathKey, FlowNode] = {}
+    parents: dict[PathKey, list[PathKey]] = {}
+    arrivals: list[PathKey] = []
+    first: PathKey = (id(start), False, stores.get(id(start), frozenset()))
     nodes_of[first] = start
-    pending: list[Key] = [first]
+    pending: list[PathKey] = [first]
     while pending:
         key = pending.pop()
         _, stepped, stored = key
@@ -324,14 +326,14 @@ def paths_between(
                 if after is wait:
                     arrivals.append(key)
                 continue  # another wait completes the request first
-            child: Key = (id(after), stepped or step, stored | stores.get(id(after), frozenset()))
+            child: PathKey = (id(after), stepped or step, stored | stores.get(id(after), frozenset()))
             parents.setdefault(child, []).append(key)
             if child not in nodes_of:
                 nodes_of[child] = after
                 pending.append(child)
     if not arrivals:
         return None
-    on_path: set[Key] = set()
+    on_path: set[PathKey] = set()
     pending = list(arrivals)
     while pending:
         key = pending.pop()
