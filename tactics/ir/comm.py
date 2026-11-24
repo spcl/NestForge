@@ -32,8 +32,9 @@ from dace.libraries.comm.nodes import (
 from dace.libraries.comm.nodes.node import CommNode, NonblockingCommNode
 from dace.sdfg import nodes
 from dace.sdfg import utils as sdutil
-from dace.sdfg.graph import MultiConnectorEdge
+from dace.sdfg.graph import MultiConnectorEdge, SubgraphView
 from dace.sdfg.state import ConditionalBlock, ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
+from dace.transformation.helpers import state_fission
 from dace.transformation.passes.analysis import loop_analysis
 
 from tactics.ir.names import in_order
@@ -712,6 +713,68 @@ def skeleton_difference(before: Skeleton | None, after: Skeleton | None) -> str 
             regions = f"inside {' > '.join(now[row][0])}, not {' > '.join(was[row][0])}"
             return f"change how {now[row][1]} runs: {regions}"
     return "change the order of the rows that start communication"
+
+
+def placed_work(state: SDFGState) -> list[nodes.Node]:
+    """The library calls and top-level doalls of ``state``: what I3 keeps out of a row's state."""
+    return [
+        n for n in state.nodes() if isinstance(n, (nodes.LibraryNode, nodes.MapEntry)) and state.entry_node(n) is None
+    ]
+
+
+def reached(state: SDFGState, start: nodes.Node, forward: bool) -> set[nodes.Node]:
+    """Every node of ``state`` the data flow reaches from ``start`` (``forward``) or that reaches it."""
+    seen: set[nodes.Node] = set()
+    pending = [start]
+    while pending:
+        node = pending.pop()
+        for edge in state.out_edges(node) if forward else state.in_edges(node):
+            other = edge.dst if forward else edge.src
+            if other not in seen:
+                seen.add(other)
+                pending.append(other)
+    return seen
+
+
+def work_label(node: nodes.Node) -> str:
+    return str(node.map.label) if isinstance(node, nodes.MapEntry) else str(node.label)
+
+
+def isolate_communication(sdfg: dace.SDFG) -> int:
+    """Give every row other than ``QUERY`` a state of its own (section 2), in the order the data flow fixes: the work
+    the row depends on moves to a state before it, and the row to a state before the work that depends on it. Returns
+    how many states were split.
+
+    :raises ValueError: A row and other work share a state with no data flow between them, so nothing orders them."""
+    split = 0
+    pending = list(sdfg.states())
+    while pending:
+        state = pending.pop()
+        work = placed_work(state)
+        rows = [n for n in work if comm_class(n) not in (None, CommClass.QUERY)]
+        if not rows or len(work) == 1:
+            continue
+        row = rows[0]
+        before, after = reached(state, row, forward=False), reached(state, row, forward=True)
+        unordered = [n for n in work if n is not row and n not in before and n not in after]
+        if unordered:
+            raise ValueError(
+                f"{row.label} and {work_label(unordered[0])} share {state.label} with no data flow between them, so "
+                "nothing orders them; split the program there"
+            )
+        earlier = [n for n in work if n in before]
+        moved = earlier or [row]
+        scopes = [
+            n
+            for entry in moved
+            for n in (state.scope_subgraph(entry).nodes() if isinstance(entry, nodes.MapEntry) else [entry])
+        ]
+        first = state_fission(SubgraphView(state, scopes), label=f"{state.label}_before_{row.label}")
+        if len(placed_work(first)) == len(work):  # the cut moved everything: no progress is possible
+            raise ValueError(f"{row.label} cannot be cut out of {state.label}")
+        pending += [first, state]
+        split += 1
+    return split
 
 
 def isolation_refusal(sdfg: dace.SDFG) -> str | None:

@@ -93,8 +93,13 @@ class TuneMove(Labeled):
 
 
 class ExamplePair(Args):
-    before: str = pydantic.Field(description="A small Python module with one @dace.program, before the transformation.")
+    before: str = pydantic.Field(
+        description="A small program before the transformation: a Python module with one @dace.program, or C code."
+    )
     after: str = pydantic.Field(description="The same program after it: same parameters, same results.")
+    language: Literal["python", "c"] = pydantic.Field(
+        default="python", description="python (checked by running both on random inputs) or c (checked to compile)."
+    )
 
 
 class RequestTransformation(Args):
@@ -394,9 +399,10 @@ TOOLS: dict[str, ToolDef] = {
     "request_transformation": ToolDef(
         phases(Phase.ANY),
         RequestTransformation,
-        "Ask for a transformation no move offers, after list_moves on the rows found none. Give at least 5 pairs of "
-        "small programs before and after it, each one @dace.program computing the same results. The request is "
-        "checked and kept for a later round; it does not change this program.",
+        "If you think you need a transformation no move offers (list_moves on the rows found none), ask for it: "
+        "explain what it does and when it is legal, and give at least 5 pairs of small programs of your own before and "
+        "after it, in Python (one @dace.program each) or C, computing the same results. The request is checked and "
+        "kept for a later round; it does not change this program.",
         Effect.READ,
     ),
     "run_defaults": ToolDef(

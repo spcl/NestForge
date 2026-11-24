@@ -22,6 +22,7 @@ from dace.transformation.passes.normalize_wcr import NormalizeWCR
 from dace.transformation.passes.parallelization.wavefront.skew import WavefrontSkew
 from dace.transformation.passes.symbol_propagation import SymbolPropagation
 
+from tactics.ir.comm import isolate_communication
 from tactics.ir.names import inline_top_level_nsdfgs, is_copy
 
 FUSE_STAGE = "fuse"
@@ -57,6 +58,8 @@ def canonicalize(sdfg: dace.SDFG, targets: Targets) -> dace.SDFG:
     narrow_nested_memlets(sdfg)
     # after the cleanup, which folds the copies it can: the ones left are rows
     explicit_copies(sdfg)
+    # every communication row alone in its state: the motion rules and invariant I3 rely on it
+    isolate_communication(sdfg)
     return sdfg
 
 

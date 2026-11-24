@@ -6,7 +6,8 @@ and kept for the authoring step between rounds.
 
 The checks are cheap and need no LLM: enough examples; every ``before`` and ``after`` is one ``@dace.program``; each
 pair computes the same on random inputs; no pair is the same program after canonicalization (it would ask for
-nothing); and no example copies the task's reference source.
+nothing); and no example copies the task's reference source. A pair may be C instead: then each side must compile as
+C and the two must differ, and the author checks that they compute the same.
 
 Between rounds, :func:`cluster_requests` groups the recorded requests that ask for one transformation: requests share a
 cluster when one of their example pairs is the same after canonicalization, up to the names of arrays and symbols. Two
@@ -18,6 +19,8 @@ import hashlib
 import inspect
 import linecache
 import re
+import shutil
+import subprocess
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -37,13 +40,19 @@ EXAMPLE_SIZE = 7
 LEAK_LINES = 3
 #: How close the outputs of a pair must be: the examples are small, so reassociation moves only the last bits.
 RTOL, ATOL = 1e-9, 1e-12
+#: The compiler a C example must get through (syntax and types, no code).
+C_COMPILER = "cc"
+#: Seconds a C example may take to compile before it is refused.
+C_COMPILE_TIMEOUT_S = 30
 
 
 class Example(Record):
-    """One pair of a request: a small ``@dace.program`` before the transformation and the same program after it."""
+    """One pair of a request: a small program before the transformation and the same program after it, as a Python
+    module with one ``@dace.program`` (``python``) or a C translation unit (``c``)."""
 
     before: str
     after: str
+    language: Literal["python", "c"] = "python"
 
 
 class RequestResult(Record):
@@ -163,12 +172,39 @@ def named_code(program: DaceProgram, targets: Targets) -> tuple[str, list[str]]:
     return code, names
 
 
+def normalized(source: str) -> str:
+    """``source`` with its whitespace collapsed: two C sides that differ only in layout are one program."""
+    return " ".join(source.split())
+
+
+def c_refusal(example: Example, where: str) -> str:
+    """Empty when both sides of a C pair compile and differ; else why not."""
+    compiler = shutil.which(C_COMPILER)
+    if compiler is None:
+        return f"{where}: no C compiler ({C_COMPILER}) to check a C example; write it as a @dace.program"
+    for side, source in (("before", example.before), ("after", example.after)):
+        command = [compiler, "-std=c11", "-fsyntax-only", "-x", "c", "-"]
+        try:
+            done = subprocess.run(command, input=source, capture_output=True, text=True, timeout=C_COMPILE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return f"{where} ({side}) takes over {C_COMPILE_TIMEOUT_S} s to compile"
+        if done.returncode != 0:
+            first = next((line for line in done.stderr.splitlines() if "error" in line), done.stderr.strip())
+            return f"{where} ({side}) does not compile as C: {first}"
+    if normalized(example.before) == normalized(example.after):
+        return f"{where}: before and after are the same C code, so it asks for nothing"
+    return ""
+
+
 def pattern_key(example: Example, targets: Targets) -> str:
     """The pair as a pattern: the canonical code of ``before`` and of ``after``, with every array and symbol renamed
     ``v<n>`` in the order the two codes first use them (in the identifiers derived from them too) and every
     floating-point constant as ``<c>``, hashed.
 
     :raises ExampleError: A side does not define, build or run one program."""
+    if example.language == "c":
+        text = f"c\0{normalized(example.before)}\0{normalized(example.after)}"
+        return hashlib.sha256(FLOAT_LITERAL.sub("<c>", text).encode()).hexdigest()
     codes, names = [], []
     for side, source in (("before", example.before), ("after", example.after)):
         code, held = named_code(program_of(source, side)[0], targets)
@@ -255,6 +291,11 @@ def example_refusal(examples: Sequence[Example], targets: Targets, reference: st
         where = f"example {index}"
         if reference and (copied_lines(example.before, reference) or copied_lines(example.after, reference)):
             return f"{where} copies the task's reference source; write small programs of your own"
+        if example.language == "c":
+            reason = c_refusal(example, where)
+            if reason:
+                return reason
+            continue
         try:
             before = program_of(example.before, f"{where} (before)")
             after = program_of(example.after, f"{where} (after)")

@@ -94,3 +94,38 @@ def test_an_example_that_copies_the_reference_source_is_refused(tmp_path: Path) 
     result = sut.request_transformation("r", "d", [a_row(sut)], examples, reference=reference)
 
     assert result.status == "refused" and "copies the task's reference" in result.reason
+
+
+def c_loop(body: str) -> str:
+    return f"void scaled(int n, const double *a, double *b) {{\n    for (int i = 0; i < n; ++i)\n        b[i] = {body};\n}}\n"
+
+
+def c_division_by_reciprocal(divisors: tuple[float, ...] = (2.0, 4.0, 8.0, 0.5, 0.25)) -> list[Example]:
+    return [Example(before=c_loop(f"a[i] / {d}"), after=c_loop(f"a[i] * {1.0 / d}"), language="c") for d in divisors]
+
+
+def test_a_request_may_give_its_pairs_in_c(tmp_path: Path) -> None:
+    sut = session(tmp_path)
+
+    result = sut.request_transformation(
+        "reciprocal-division", "x / c -> x * (1/c)", [a_row(sut)], c_division_by_reciprocal()
+    )
+
+    assert (result.status, result.reason) == ("recorded", "")
+    assert all(example.language == "c" for example in sut.requests[0].examples)
+
+
+def test_a_c_pair_that_does_not_compile_or_does_not_change_is_refused(tmp_path: Path) -> None:
+    sut = session(tmp_path)
+    broken = [*c_division_by_reciprocal()[:4], Example(before=c_loop("a[i] /"), after=c_loop("a[i]"), language="c")]
+    same = [
+        *c_division_by_reciprocal()[:4],
+        Example(before=c_loop("a[i] / 2.0"), after=c_loop("a[i]  /  2.0"), language="c"),
+    ]
+
+    not_c = sut.request_transformation("r", "d", [a_row(sut)], broken)
+    unchanged = sut.request_transformation("r", "d", [a_row(sut)], same)
+
+    assert not_c.status == "refused" and "does not compile as C" in not_c.reason
+    assert unchanged.status == "refused" and "asks for nothing" in unchanged.reason
+    assert sut.requests == []

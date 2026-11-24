@@ -60,6 +60,7 @@ every later call.
 | `apply_move rollback []` | takes the last move back, labels included; again for the one before, up to 8 | yes |
 | `tune_move kind labels values [scope]` | a tiling move, `vectorize-doall` or `set-schedule-gpu` at 1 to 4 sizes (tile sizes, lanes, block), each measured; keeps the fastest if it beats the program, else nothing | yes |
 | `run_defaults stage=moves` / `finish` | the default moves (wavefronts, then fusion) / the stages after your moves | yes |
+| `request_transformation name description rows examples` | asks for a transformation no move offers, for a later round | no |
 
 Arguments, each meaning one thing: `tile_sizes` (tile extents), `lanes` (vector lanes), `block` (a GPU thread block),
 `max_iterations`, `implementation`, `config_values`, `operation`, `container`, `isa`, `schedule`, `chunk`,
@@ -87,6 +88,10 @@ phase, the summary of the phase it left, then the guide of the phase it reached.
    the very program. After a move, open only the rows you need; do not reprint the whole tree.
 5. Hints outrank this page, in their order: a `failed` or `wrong result` kernel first (`rollback`), then `bytes
    spilled` (the body is too big: `doall-fission`), then `loop not vectorized` with the compiler's reason.
+6. If you think you need a transformation that no move offers (`list_moves` on the rows finds none), do not stop:
+   `request_transformation`. Explain what it does and when it is legal, and give at least 5 pairs of small programs
+   of your own before and after it, in Python (one `@dace.program` each, run on random inputs) or C (`language: c`,
+   compiled), each pair computing the same results. It is kept for a later round and changes nothing now.
 
 | you see | try |
 |---|---|

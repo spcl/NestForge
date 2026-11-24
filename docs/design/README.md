@@ -18,6 +18,7 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | [bench-requests.md](bench-requests.md) | the fifteen requests to HPCAgent-Bench, B1 to B15 | | |
 | [persistent-kernel.md](persistent-kernel.md) | `persistent-kernel`: a time loop of kernels as one launch (megakernel) | none | built on the CPU; GPU run pending |
 | [transformation-requests.md](transformation-requests.md) | `request_transformation`: the agent asks for a move no family offers | none | request, clustering, the authored catalogue and the gate built; the authoring agent is the owner's step |
+| [mlir-llvm-agent.md](mlir-llvm-agent.md) | an agent that applies MLIR then LLVM passes one move at a time, with the loops shown after each | Polygeist in the image (exists) | yes; two owner decisions at the end of the page |
 
 ## Where to start
 
