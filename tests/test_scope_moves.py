@@ -29,6 +29,12 @@ def chain(a: dace.float64[N], b: dace.float64[N], c: dace.float64[N]) -> None:
         c[i] = (t[i - 1] + t[i + 1]) * 2.0
 
 
+@dace.program
+def smooth_2d(a: dace.float64[N, N], b: dace.float64[N, N]) -> None:
+    for i, j in dace.map[1 : N - 1, 1 : N - 1]:
+        b[i, j] = (a[i - 1, j] + a[i + 1, j] + a[i, j - 1] + a[i, j + 1]) * 0.25
+
+
 def chain_reference(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     t = a[:-2] + a[1:-1] + a[2:] + b[1:-1]
     doubled: np.ndarray = (t[:-2] + t[2:]) * 2.0
@@ -347,3 +353,18 @@ def test_tma_is_refused_on_a_gpu_older_than_hopper_and_says_why(tmp_path: Path) 
         done = session.apply_move("copy-to-tma", kernel, scope=first)
 
     assert done.status is not MoveStatus.APPLIED and "compute capability 9.0" in done.reason
+
+
+def test_a_block_shorter_than_the_doalls_rank_is_padded_with_ones_as_cuda_reads_dim3(tmp_path: Path) -> None:
+    """spcl/tactics#112: ``block=[256]`` on a 2-D kernel doall is ``[256, 1]``, which DaCe's GPU tiling reads per
+    dimension; a block of one size per dimension left the leading dimension without a size."""
+    session = Session(smooth_2d.to_sdfg(simplify=True), targets=Targets(gpu=True), work_dir=str(tmp_path))
+    (first,) = (kernel.name for kernel in session.default_scopes())
+    session.place({first: "gpu"})
+    session.insert_copies()
+    (listed,) = session.list_moves("set-schedule-gpu", scope=first)
+
+    done = session.apply_move("set-schedule-gpu", listed.labels, scope=first, block=[256])
+
+    assert (done.status, done.reason) == (MoveStatus.APPLIED, "GPU schedule block=[256, 1]"), done
+    assert placed_maps(session, first)[listed.labels[0]].gpu_block_size == [256, 1]

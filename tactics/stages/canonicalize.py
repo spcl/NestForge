@@ -77,6 +77,17 @@ def structural_cleanup(sdfg: dace.SDFG) -> None:
     normalize_map_bodies(sdfg)
 
 
+def move_cleanup(sdfg: dace.SDFG) -> None:
+    """:func:`structural_cleanup` after a move, without DaCe's ``ForwardCopyMaps``: a copy a move makes
+    (``snapshot-reads``) is the move, and forwarding its readers back to the copied array would undo it.
+    Canonicalization forwards the copies the program came with."""
+    for unit in StructuralCleanup().units():
+        # shortcut: by name, since DaCe extended 1.0.0 has no ForwardCopyMaps; import it once the pin is >= 1.0.1
+        if type(unit).__name__ != "ForwardCopyMaps":
+            unit.apply_pass(sdfg, {})
+    normalize_map_bodies(sdfg)
+
+
 def explicit_copies(sdfg: dace.SDFG) -> None:
     """Every copy between two access nodes outside a map, in ``sdfg`` itself, becomes a ``CopyLibraryNode``: a
     ``lib_copy`` row the moves take (codegen's ``InsertExplicitCopies``, run early); :func:`implicit_copies` is the

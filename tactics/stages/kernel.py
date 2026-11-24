@@ -21,6 +21,7 @@ from dace.codegen import cpf
 from dace.codegen.common import get_gpu_backend
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
+from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize.finalize import finalize_for_target, offload_to_gpu
 from dace.transformation.passes.megakernel.loops import MegakernelLoops
 from dace.transformation.passes.megakernel.megakernel import MegaKernelOptimization
@@ -323,6 +324,21 @@ def persistent_loops(sdfg: dace.SDFG, device: str, loops: AbstractSet[str]) -> i
     return MegakernelLoops(device_type, set(loops)).apply_pass(sdfg, {}) or 0
 
 
+def with_megakernel_blocks(boundary: Boundary, loops: AbstractSet[str]) -> Boundary:
+    """``boundary`` with a copy of its body in which every doall of the loops labeled ``loops`` that has no thread
+    block of its own takes the megakernel's, one-dimensional: DaCe's GPU tiling would give a 2-D doall a 2-D block,
+    which the megakernel's 1-D launch conflicts with (spcl/tactics#113)."""
+    body = copy.deepcopy(boundary.standalone_sdfg)
+    threads = MegakernelLoops().block_size
+    for loop in body.all_control_flow_regions(recursive=True):
+        if not isinstance(loop, LoopRegion) or loop.label not in loops:
+            continue
+        for node, parent in loop.all_nodes_recursive():
+            if isinstance(node, nodes.MapEntry) and parent.entry_node(node) is None and not node.map.gpu_block_size:
+                node.map.gpu_block_size = [threads, *[1] * (min(len(node.map.params), 3) - 1)]
+    return dataclasses.replace(boundary, standalone_sdfg=body)
+
+
 def launches(sdfg: dace.SDFG) -> int:
     """The GPU kernels ``sdfg`` launches: its ``GPU_Device`` doalls."""
     return sum(
@@ -348,6 +364,9 @@ def schedule_kernel(
     kernel each (:func:`persistent_loops`)."""
     device = kernel_device(ext)
     form = kernel_form(device)
+    if persistent and device == "gpu":
+        # shortcut: a block the agent set that is not 1-D still conflicts; refuse it at set-schedule-gpu if it shows
+        boundary = with_megakernel_blocks(boundary, persistent)
     sdfg = form.schedule(boundary)
     if persistent:
         persistent_loops(sdfg, device, persistent)

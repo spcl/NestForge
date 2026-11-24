@@ -20,6 +20,7 @@ from test_placement import chain
 from test_rollback_equivalence import content_of
 
 from tactics.records import MoveStatus
+from tactics.server import Setup, started_session
 from tactics.session import Session
 from tactics.stages.canonicalize import Targets
 from tactics.stages.scopes import kernel_arguments, parallel_top_level_maps
@@ -461,3 +462,24 @@ def test_naming_an_empty_state_is_refused_and_changes_nothing(tmp_path: Path) ->
     assert result.status is MoveStatus.ILLEGAL, result
     assert "empty" in str(result.reason)
     assert content_of(session.sdfg) == before and not external_calls(session.sdfg)
+
+
+def test_a_scoped_state_keeps_the_scalar_the_convergence_test_after_it_reads(tmp_path: Path) -> None:
+    """spcl/tactics#111: ``cg``'s step state writes ``sqrt_rsnew`` and the edge after it tests it; the kernel the state
+    becomes still writes it where the edge reads it, so the program validates after the scopes are finalized."""
+    sut = started_session(Setup("cg", "S", "float64", True, str(tmp_path)), codegen="first")
+    sut.run_defaults("moves")
+    (label,) = [
+        label
+        for label, (obj, parent) in sut.row_index().items()
+        if parent is None
+        and isinstance(obj, SDFGState)
+        and any("sqrt_rsnew" in edge.data.free_symbols for edge in obj.parent_graph.out_edges(obj))
+    ]
+
+    result = sut.set_scope([label])
+    sut.run_defaults("scopes")
+    finalized = sut.finalize_scope()
+
+    assert (result.status, finalized.status) == (MoveStatus.APPLIED, MoveStatus.APPLIED), (result, finalized)
+    sut.sdfg.validate()

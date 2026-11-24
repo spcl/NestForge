@@ -86,7 +86,7 @@ def test_a_move_that_builds_an_invalid_program_is_refused_and_undone(
 ) -> None:
     sut = session(tmp_path)
     labels, before = first_move(sut, "tile-for"), program(sut)
-    monkeypatch.setattr(session_module, "structural_cleanup", dangling_read)
+    monkeypatch.setattr(session_module, "move_cleanup", dangling_read)
 
     with pytest.raises(InvalidSDFGError):
         sut.apply_move("tile-for", labels, tile_sizes=(8,))
@@ -124,7 +124,7 @@ def test_a_transformation_that_exits_is_rolled_back_and_the_session_answers_the_
     sut = session(tmp_path)
     labels, before = first_move(sut, "tile-for"), program(sut)
     move = {"kind": "tile-for", "labels": labels, "tile_sizes": (8,)}
-    monkeypatch.setattr(session_module, "structural_cleanup", exiting)
+    monkeypatch.setattr(session_module, "move_cleanup", exiting)
 
     reply = answer(sut, "apply_move", move, None)
 

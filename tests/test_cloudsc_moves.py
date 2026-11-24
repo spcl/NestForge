@@ -7,8 +7,8 @@ The program is the bench's Python cloudsc_monolith, canonicalized once up to fus
 starts it. Each seed walks a copy of it. A move draws its kind first, since doall-fusion is almost every legal
 candidate, then its place: either a move ``list_moves`` offers or any rows of the kind's shape. Applied moves are
 checked in batches, as one codegen and build costs over a minute while a run costs milliseconds. A failure names the
-seed and the moves since the last passing check. Rolling the applied moves back, one at a time, gives back each
-program before them, the canonical one at the end.
+seed and the moves since the last passing check. The same walk then rolls the applied moves back, one at a time, and
+gets back each program before them, the canonical one at the end.
 """
 
 from collections.abc import Iterator
@@ -65,62 +65,56 @@ def moves(session: Session, rng: np.random.Generator) -> Iterator[tuple[str, tup
             yield kind, labels
 
 
+def check(session: Session, inputs: dict[str, np.ndarray], reference: Reference, seed: int, pending: list[str]) -> None:
+    why = program_mismatch(session, inputs, reference)
+    assert not why, f"seed={seed}: wrong after\n  " + "\n  ".join(pending) + f"\n{why}"
+    pending.clear()
+
+
 @pytest.mark.parametrize("seed", range(NSEEDS))
-def test_a_random_move_keeps_the_program_correct_or_is_refused(canonical: Program, seed: int) -> None:
+def test_random_moves_keep_the_program_correct_or_are_refused_and_roll_back_to_each_earlier_program(
+    canonical: Program, seed: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One random walk per seed checks both facts, as a walk costs minutes: the moves keep the program correct or are
+    refused untouched, and rolling the applied ones back gives back each program before them."""
     base, inputs, reference = canonical
+    monkeypatch.setattr(session_module, "UNDO_DEPTH", ATTEMPTS)  # every applied move stays in reach
     session = base.trial()
     rng = np.random.default_rng(seed)
     pending: list[str] = []
+    before: list[tuple[str, str]] = []
     applied = refused = 0
     for kind, labels in moves(session, rng):
-        before = session.sdfg.hash_sdfg()
+        state = (session.sdfg.hash_sdfg(), session.describe())
         result = session.apply_move(kind, labels)
         step = f"{kind} {' '.join(labels)}"
         if result.status is MoveStatus.ILLEGAL:
             refused += 1
-            assert session.sdfg.hash_sdfg() == before, (
+            assert session.sdfg.hash_sdfg() == state[0], (
                 f"seed={seed}: refused {step} ({result.reason}) still changed the program"
             )
             continue
         assert result.status is MoveStatus.APPLIED, f"seed={seed}: {step} is {result.status.name}: {result.reason}"
         session.sdfg.validate()
         applied += 1
-        pending.append(f"{step} -> {result.reason}")
-        if len(pending) == CHECK_EVERY:
-            why = program_mismatch(session, inputs, reference)
-            assert not why, f"seed={seed}: wrong after\n  " + "\n  ".join(pending) + f"\n{why}"
-            pending = []
-    if pending:
-        why = program_mismatch(session, inputs, reference)
-        assert not why, f"seed={seed}: wrong after\n  " + "\n  ".join(pending) + f"\n{why}"
-    print(f"seed={seed}: {applied} applied, {refused} refused")
-    assert applied > 0, f"seed={seed}: no move applied ({refused} refused), so nothing was checked"
-
-
-@pytest.mark.parametrize("seed", range(NSEEDS))
-def test_rolling_back_random_moves_gives_back_each_earlier_program(
-    canonical: Program, seed: int, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    base, inputs, reference = canonical
-    monkeypatch.setattr(session_module, "UNDO_DEPTH", ATTEMPTS)  # every applied move stays in reach
-    session = base.trial()
-    rng = np.random.default_rng(seed)
-    before: list[tuple[str, str]] = []
-    for kind, labels in moves(session, rng):
-        state = (session.sdfg.hash_sdfg(), session.describe())
-        if session.apply_move(kind, labels).status is not MoveStatus.APPLIED:
-            continue
         if kind == ROLLBACK:  # an undo pops the change it undid; it is no change of its own to roll back
             if before:
                 before.pop()
         else:
             before.append(state)
+        pending.append(f"{step} -> {result.reason}")
+        if len(pending) == CHECK_EVERY:
+            check(session, inputs, reference, seed, pending)
+    if pending:
+        check(session, inputs, reference, seed, pending)
+    print(f"seed={seed}: {applied} applied, {refused} refused")
+    assert applied > 0, f"seed={seed}: no move applied ({refused} refused), so nothing was checked"
 
+    assert before, f"seed={seed}: every applied move was a rollback, so nothing was rolled back"
     back = []
     for _ in before:
         session.apply_move(ROLLBACK, [])
         back.append((session.sdfg.hash_sdfg(), session.describe()))
 
-    assert before, f"seed={seed}: no move applied, so nothing was rolled back"
     assert back == before[::-1], f"seed={seed}: a rollback did not give back the program before its move"
     assert not (why := program_mismatch(session, inputs, reference)), f"seed={seed}: wrong after rollback: {why}"

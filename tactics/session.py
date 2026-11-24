@@ -89,9 +89,9 @@ from tactics.stages.canonicalize import (
     finish,
     fuse_and_finish,
     implicit_copies,
+    move_cleanup,
     narrow_nested_memlets,
     skew_wavefronts,
-    structural_cleanup,
 )
 from tactics.stages.expand import implementations, in_doall, set_default_implementations, settle
 from tactics.stages.families import DEFAULT_MOVES_FAMILY, WAVEFRONT_FAMILY, checked_families, switched_off
@@ -2139,7 +2139,7 @@ class Session:
                 # a move may leave a nest at the top of a state (MapFission does), which only canonical form keeps
                 # correct
                 inline_top_level_nsdfgs(target)
-                structural_cleanup(target)
+                move_cleanup(target)
                 # a copy the move made, or one the cleanup left, is a lib_copy row
                 explicit_copies(target)
                 # an interchange that builds a nest leaves its outer memlets whole (#24); fusions and the schedule

@@ -15,7 +15,6 @@ from tactics.corpus.bench import corpus_kernel, preset_sizes
 from tactics.paths import REPO_ROOT
 from tactics.records import MoveStatus
 from tactics.replay import (
-    DATATYPE,
     Context,
     ReplayError,
     Script,
@@ -23,11 +22,11 @@ from tactics.replay import (
     markdown,
     markers,
     openmp_env,
-    replay,
+    replay_started,
     short,
     splice,
+    started,
 )
-from tactics.server import Setup, start
 from tactics.session import Session
 from tactics.stages.canonicalize import Targets
 from tactics.stages.moves import ROLLBACK
@@ -132,12 +131,20 @@ def test_scope_refuses_a_filter_nothing_matches() -> None:
 
 @pytest.mark.integration
 @pytest.mark.parametrize("path", SOLUTIONS, ids=[p.stem for p in SOLUTIONS])
-def test_every_solution_replays_correctly(path: Path) -> None:
-    """Every reference solution still applies on these pins, and every variant matches the oracle at preset S."""
+def test_every_solution_replays_correctly_and_rolls_back_to_the_canonical_program(
+    path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every reference solution still applies on these pins, and every variant matches the oracle at preset S. Rolling
+    back every change the solution made, one ``rollback`` at a time, gives back the canonical program and its tree;
+    halfway back, the program is a valid SDFG. One test for both, as starting a big kernel costs minutes."""
     solution = load_solution(path)
     if solution.ci_skip:
         pytest.skip(solution.ci_skip)
-    report = replay(solution, CI_CONTEXT, reps=QUICK_REPS)
+    monkeypatch.setattr(session_module, "UNDO_DEPTH", 10_000)  # every change of the solution stays in reach
+    canonical = started(solution, CI_CONTEXT)
+
+    report = replay_started(solution, CI_CONTEXT, canonical, reps=QUICK_REPS)
+
     names = [v.name for v in report.variants]
     assert names == ["baseline", "reference"]
     for variant in report.variants:
@@ -147,29 +154,16 @@ def test_every_solution_replays_correctly(path: Path) -> None:
     assert set(report.pins) == {"nestforge", "dace", "hpcagent_bench"}
     assert markdown([report]).count("| cpu, 1 thread(s), preset S |") == len(names)
 
-
-@pytest.mark.integration
-@pytest.mark.parametrize("path", SOLUTIONS, ids=[p.stem for p in SOLUTIONS])
-def test_every_solution_rolls_back_to_the_canonical_program(path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Rolling back every change a reference solution made, one ``rollback`` at a time, gives back the canonical
-    program and its tree; halfway back, the program is a valid SDFG."""
-    solution = load_solution(path)
-    if solution.ci_skip:
-        pytest.skip(solution.ci_skip)
-    monkeypatch.setattr(session_module, "UNDO_DEPTH", 10_000)  # every change of the solution stays in reach
-    base, _, _ = start(Setup(solution.kernel, CI_CONTEXT.preset, DATATYPE, False), "first")
-    sut = base.trial()
-    canonical = (sut.sdfg.hash_sdfg(), sut.describe())
-    script = Script(sut)
-    solution.solve(script, CI_CONTEXT)
+    sut = canonical[0].trial()
+    before = (sut.sdfg.hash_sdfg(), sut.describe())
+    solution.solve(Script(sut), CI_CONTEXT)
     changes = len(sut.history)
-
     halfway = [sut.apply_move(ROLLBACK, []) for _ in range(changes // 2)]
     sut.sdfg.validate()
     rest = [sut.apply_move(ROLLBACK, []) for _ in range(changes - changes // 2)]
 
     assert all(result.status is MoveStatus.APPLIED for result in halfway + rest)
-    assert (sut.sdfg.hash_sdfg(), sut.describe()) == canonical
+    assert (sut.sdfg.hash_sdfg(), sut.describe()) == before
     assert sut.history == []
 
 

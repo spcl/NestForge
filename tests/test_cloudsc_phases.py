@@ -59,19 +59,27 @@ def scoped(cloudsc_monolith: Program) -> Session:
     return session
 
 
-def test_listed_moves_grow_with_the_maps_not_with_their_pairs(cloudsc_monolith: Program) -> None:
+@pytest.fixture(scope="module")
+def listed(cloudsc_monolith: Program) -> list[Move]:
+    """Every move listed on the canonical program, listed once: a listing of cloudsc takes minutes."""
+    return cloudsc_monolith[0].list_moves()
+
+
+def test_listed_moves_grow_with_the_maps_not_with_their_pairs(cloudsc_monolith: Program, listed: list[Move]) -> None:
     session = cloudsc_monolith[0]
     maps = sum(isinstance(n, nodes.MapEntry) for n, _ in session.sdfg.all_nodes_recursive())
 
-    listed = Counter(move.kind for move in session.list_moves())
+    kinds = Counter(move.kind for move in listed)
 
-    assert set(listed) <= set(MOVE_SHAPES)
-    assert 0 < listed["doall-fusion"] <= 2 * maps, listed
+    assert set(kinds) <= set(MOVE_SHAPES)
+    assert 0 < kinds["doall-fusion"] <= 2 * maps, kinds
 
 
-def test_the_first_listed_move_of_every_kind_applies_and_leaves_a_valid_program(cloudsc_monolith: Program) -> None:
+def test_the_first_listed_move_of_every_kind_applies_and_leaves_a_valid_program(
+    cloudsc_monolith: Program, listed: list[Move]
+) -> None:
     base = cloudsc_monolith[0]
-    firsts = {move.kind: move for move in reversed(base.list_moves())}
+    firsts = {move.kind: move for move in reversed(listed)}
 
     statuses = {kind: applied_and_valid(base, move) for kind, move in firsts.items()}
 

@@ -69,7 +69,7 @@ def test_a_move_that_fails_after_its_rewrite_is_undone(
     labels, before, tree = first_move(sut, kind), program(sut), sut.describe()
 
     with monkeypatch.context() as patch:
-        patch.setattr(session_module, "structural_cleanup", half_then_fail)
+        patch.setattr(session_module, "move_cleanup", half_then_fail)
         with pytest.raises(KeyError, match="injected"):
             sut.apply_move(kind, labels, tile_sizes=sizes)
 
@@ -138,7 +138,7 @@ def test_a_move_that_crashes_is_named_rolled_back_and_the_next_move_applies(
     move = {"kind": "tile-for", "labels": labels, "tile_sizes": (8,)}
 
     with monkeypatch.context() as patch:
-        patch.setattr(session_module, "structural_cleanup", half_then_fail)
+        patch.setattr(session_module, "move_cleanup", half_then_fail)
         reply = answer(sut, "apply_move", move, None)
 
     assert reply.error == (

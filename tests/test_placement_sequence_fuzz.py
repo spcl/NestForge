@@ -197,16 +197,10 @@ def run_sequence(seed: int, tmp_path: Path, gpu: bool) -> tuple[Session, list[Ca
 
 @pytest.mark.parametrize("gpu", TARGETS)
 @pytest.mark.parametrize("seed", range(NCASES))
-def test_a_random_sequence_of_scope_and_placement_calls_keeps_the_invariants(
+def test_a_random_sequence_keeps_the_invariants_and_repeating_its_applied_calls_rebuilds_the_program(
     seed: int, tmp_path: Path, gpu: bool
 ) -> None:
-    run_sequence(seed, tmp_path, gpu)
-
-
-@pytest.mark.parametrize("gpu", TARGETS)
-@pytest.mark.parametrize("seed", range(NCASES))
-def test_repeating_the_applied_calls_rebuilds_the_program(seed: int, tmp_path: Path, gpu: bool) -> None:
-    session, applied = run_sequence(seed, tmp_path, gpu)
+    session, applied = run_sequence(seed, tmp_path, gpu)  # checks every call on the way
 
     again = fresh(seed, tmp_path, gpu, "again")
     for name, arguments in applied:

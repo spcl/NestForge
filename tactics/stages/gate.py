@@ -27,7 +27,7 @@ from tactics.ir.introspect import describe_graph
 from tactics.records import MoveStatus
 from tactics.session import Session
 from tactics.stages.authored import AuthoredMove
-from tactics.stages.canonicalize import structural_cleanup
+from tactics.stages.canonicalize import move_cleanup
 from tactics.stages.performance import Reference, time_program
 from tactics.stages.requests import ATOL, EXAMPLE_SIZE, RTOL, Example, ExampleError, drawn, program_of, runnable
 
@@ -50,7 +50,7 @@ def fixed_point_failure(session: Session, where: str) -> str:
     """Empty when the session's cleanup leaves its program as it is; else what it changed, by the tree before."""
     tree = describe_graph(session.sdfg)
     cleaned = copy.deepcopy(session.sdfg)
-    structural_cleanup(cleaned)
+    move_cleanup(cleaned)
     return "" if describe_graph(cleaned) == tree else f"{where}: the cleanup changes the program the move leaves"
 
 

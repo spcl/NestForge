@@ -52,12 +52,11 @@ def detach(sdfg: dace.SDFG) -> dace.SDFG:
 
 def scope_twin(state: SDFGState, entry: nodes.MapEntry) -> tuple[SDFGState, nodes.MapEntry]:
     """A copy of the scope of ``entry`` and the access nodes it reads and writes, alone in a new state of a new SDFG
-    that has the program's containers and symbols. A probe that rewrites one doall copies that doall, not the program.
+    that has the containers they touch and the program's symbols. A probe that rewrites one doall copies that doall,
+    not the program: on cloudsc a copy of every container per probe made listing the moves take minutes.
     """
     sdfg = state.sdfg
     twin = dace.SDFG(sdfg.name)
-    for name, desc in sdfg.arrays.items():
-        twin.add_datadesc(name, copy.deepcopy(desc))
     for name, dtype in sdfg.symbols.items():
         twin.add_symbol(name, dtype)
     twin_state = twin.add_state(is_start_block=True)
@@ -65,6 +64,11 @@ def scope_twin(state: SDFGState, entry: nodes.MapEntry) -> tuple[SDFGState, node
     outer = [e.src for e in state.in_edges(entry)] + [e.dst for e in state.out_edges(exit_node)]
     body: list[nodes.Node] = list(state.all_nodes_between(entry, exit_node) or ())
     keep = dict.fromkeys([*(n for n in outer if isinstance(n, nodes.AccessNode)), entry, exit_node, *body])
+    edges = [edge for edge in state.edges() if edge.src in keep and edge.dst in keep]
+    used = {n.data for n in keep if isinstance(n, nodes.AccessNode)}
+    used |= {edge.data.data for edge in edges if edge.data.data is not None}
+    for name in sorted(used):
+        twin.add_datadesc(name, copy.deepcopy(sdfg.arrays[name]))
     memo: dict[int, object] = {}
     copies = {node: copy.deepcopy(node, memo) for node in keep}
     for node in copies.values():
@@ -73,11 +77,10 @@ def scope_twin(state: SDFGState, entry: nodes.MapEntry) -> tuple[SDFGState, node
             node.sdfg.parent = twin_state
             node.sdfg.parent_sdfg = twin
             node.sdfg.parent_nsdfg_node = node
-    for edge in state.edges():
-        if edge.src in copies and edge.dst in copies:
-            twin_state.add_edge(
-                copies[edge.src], edge.src_conn, copies[edge.dst], edge.dst_conn, copy.deepcopy(edge.data, memo)
-            )
+    for edge in edges:
+        twin_state.add_edge(
+            copies[edge.src], edge.src_conn, copies[edge.dst], edge.dst_conn, copy.deepcopy(edge.data, memo)
+        )
     twin.reset_cfg_list()
     return twin_state, cast(nodes.MapEntry, copies[entry])
 
@@ -163,9 +166,33 @@ def extract_map_nest(parent_sdfg: dace.SDFG, map_entry: nodes.MapEntry, name: st
 def extract_state_nodes(parent_sdfg: dace.SDFG, state: SDFGState, members: Sequence[nodes.Node], name: str) -> Boundary:
     """Outline ``members`` of ``state``, a convex set of whole map scopes and the access nodes between them, into
     one nested SDFG over whole boundary arrays."""
+    before = dict(parent_sdfg.arrays)
     subgraph = SubgraphView(state, list(members))
     nsdfg_node = helpers.nest_state_subgraph(parent_sdfg, state, subgraph, name=name)
+    export_outside_reads(parent_sdfg, before, nsdfg_node, state)
     return boundary_from_nsdfg(nsdfg_node, state)
+
+
+def read_outside(sdfg: dace.SDFG) -> set[str]:
+    """The names ``sdfg`` reads outside its nested SDFGs: on interstate edges and in loop and branch conditions, and
+    in the access nodes of its states."""
+    return {str(s) for s in sdfg.used_symbols(all_symbols=True)} | {
+        n.data for state in sdfg.states() for n in state.data_nodes()
+    }
+
+
+def export_outside_reads(
+    parent_sdfg: dace.SDFG, before: Mapping[str, dace.data.Data], nsdfg_node: nodes.NestedSDFG, state: SDFGState
+) -> None:
+    """A container nesting moved into ``nsdfg_node`` that the program still reads outside it (a scalar a convergence
+    test reads on the edge after the state, spcl/tactics#111) becomes an output of the nest again."""
+    inner = nsdfg_node.sdfg
+    for name in sorted(set(before) - set(parent_sdfg.arrays) & read_outside(parent_sdfg)):
+        assert name in inner.arrays, f"{name} left the program without entering the nest"
+        parent_sdfg.add_datadesc(name, copy.deepcopy(before[name]))
+        inner.arrays[name].transient = False
+        nsdfg_node.add_out_connector(name)
+        state.add_edge(nsdfg_node, name, state.add_write(name), None, dace.Memlet.from_array(name, before[name]))
 
 
 def assignment_dtype(rhs: str, table: dict[str, dace.dtypes.typeclass]) -> dace.dtypes.typeclass:
@@ -246,10 +273,12 @@ def extract_blocks(parent_sdfg: dace.SDFG, blocks: Sequence[ControlFlowBlock], n
     for s, dtype in blocks_defined_symbol_dtypes(parent_sdfg, blocks).items():
         if s not in parent_sdfg.symbols:
             parent_sdfg.add_symbol(s, dtype)
+    before = dict(parent_sdfg.arrays)
     subgraph = SubgraphView(blocks[0].parent_graph, list(blocks))
     inner_state = helpers.nest_sdfg_subgraph(parent_sdfg, subgraph, start=blocks[0])
     nsdfg_node = next(n for n in inner_state.nodes() if isinstance(n, nodes.NestedSDFG))
     # nest_sdfg_subgraph takes no name, and unnamed nests collide in the build cache
     if name:
         nsdfg_node.sdfg.name = name  # pyright: ignore[reportAttributeAccessIssue]  # a DaCe Property, not read-only
+    export_outside_reads(parent_sdfg, before, nsdfg_node, inner_state)
     return boundary_from_nsdfg(nsdfg_node, inner_state)

@@ -389,8 +389,23 @@ def pins() -> dict[str, str]:
 
 def replay(solution: Solution, ctx: Context, reps: int = DEFAULT_REPS) -> ReplayReport:
     """The baseline and the reference of ``solution`` on ``ctx``, in that order."""
+    return replay_started(solution, ctx, started(solution, ctx), reps)
+
+
+def started(solution: Solution, ctx: Context) -> tuple[Session, dict[str, np.ndarray], Reference | None]:
+    """The canonicalized session of ``solution``'s kernel on ``ctx`` and its data."""
     # the first configuration per kernel: a replay compares moves, not compiler sweeps
-    session, inputs, reference = start(Setup(solution.kernel, ctx.preset, DATATYPE, ctx.device == "gpu"), "first")
+    return start(Setup(solution.kernel, ctx.preset, DATATYPE, ctx.device == "gpu"), "first")
+
+
+def replay_started(
+    solution: Solution,
+    ctx: Context,
+    canonical: tuple[Session, dict[str, np.ndarray], Reference | None],
+    reps: int = DEFAULT_REPS,
+) -> ReplayReport:
+    """:func:`replay` on the session and data :func:`started` gave; each variant copies the session and leaves it."""
+    session, inputs, reference = canonical
     steps: dict[str, Steps] = {"baseline": baseline, "reference": solution.solve}
     variants = [run_variant(session, ctx, name, fn, (inputs, reference), reps) for name, fn in steps.items()]
     return ReplayReport(

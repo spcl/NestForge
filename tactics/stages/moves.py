@@ -1825,7 +1825,9 @@ def kernel_doall_choice(
             "to sequential first.",
             Refusal.ARGUMENT,
         )
-    return GpuChoice(block=tuple(block))
+    # a block shorter than the doall's rank reads as CUDA reads dim3(256): the missing sizes are 1 (spcl/tactics#112)
+    rank = min(len(entry.map.params), 3)
+    return GpuChoice(block=(*block, *(1,) * (rank - len(block))))
 
 
 def inner_doall_choice(

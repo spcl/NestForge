@@ -72,13 +72,18 @@ def moved_programs(name: str, split: bool = False) -> tuple[dace.SDFG, list[tupl
     return base, moved
 
 
-def run_on_ranks(sdfg: dace.SDFG, name: str, ranks: int, folder: Path) -> list[dict[str, np.ndarray]]:
-    """Each rank's outputs of ``sdfg`` (fixture ``name``) at ``ranks`` ranks."""
-    launcher = shutil.which("mpirun")
-    assert launcher is not None, "mpirun is on PATH (Open MPI)"
+def built(sdfg: dace.SDFG, folder: Path) -> Path:
+    """The build folder of ``sdfg``, compiled once for every rank count."""
     build = folder / "build"
     sdfg.build_folder = str(build)
     sdfg.compile()
+    return build
+
+
+def run_on_ranks(build: Path, name: str, ranks: int, folder: Path) -> list[dict[str, np.ndarray]]:
+    """Each rank's outputs of the program built in ``build`` (fixture ``name``) at ``ranks`` ranks."""
+    launcher = shutil.which("mpirun")
+    assert launcher is not None, "mpirun is on PATH (Open MPI)"
     prefix = folder / f"out{ranks}"
     command = [
         launcher,
@@ -99,13 +104,17 @@ def run_on_ranks(sdfg: dace.SDFG, name: str, ranks: int, folder: Path) -> list[d
 
 def outputs_match_on_every_rank(name: str, base: dace.SDFG, moved: list[tuple[str, dace.SDFG]], tmp_path: Path) -> None:
     ranks = [count for count in RANKS if count > 1 or name not in NEEDS_TWO]
+    base.name = f"{name}_base"
+    base_build = built(base, tmp_path / "base")
+    builds = []
+    for index, (label, program) in enumerate(moved):
+        program.name = f"{name}_moved{index}"
+        builds.append((label, built(program, tmp_path / f"moved{index}"), tmp_path / f"moved{index}"))
     for count in ranks:
-        base.name = f"{name}_base"
-        want = run_on_ranks(base, name, count, tmp_path / "base")
+        want = run_on_ranks(base_build, name, count, tmp_path / "base")
         assert any(np.any(value != 0) for value in want[0].values()), "the fixture computes something"
-        for index, (label, program) in enumerate(moved):
-            program.name = f"{name}_moved{index}"
-            got = run_on_ranks(program, name, count, tmp_path / f"moved{index}")
+        for label, build, folder in builds:
+            got = run_on_ranks(build, name, count, folder)
             for rank, (expected, actual) in enumerate(zip(want, got, strict=True)):
                 for output in expected:
                     assert np.array_equal(expected[output], actual[output]), (label, count, rank, output)
@@ -114,6 +123,8 @@ def outputs_match_on_every_rank(name: str, base: dace.SDFG, moved: list[tuple[st
 @pytest.mark.parametrize("name", sorted(FIXTURES))
 def test_every_legal_move_of_a_communication_row_keeps_every_ranks_outputs(name: str, tmp_path: Path) -> None:
     base, moved = moved_programs(name)
+    # the fixtures leave the rows somewhere to go, so this checks moves, not an empty list
+    assert moved, f"{name}: no legal move of a communication row is listed"
     outputs_match_on_every_rank(name, base, moved, tmp_path)
 
 
@@ -203,10 +214,3 @@ def relaid_programs(name: str) -> tuple[dace.SDFG, list[tuple[str, dace.SDFG]]]:
 def test_reversing_the_layout_of_an_exchanged_local_array_keeps_every_ranks_outputs(tmp_path: Path) -> None:
     base, relaid = relaid_programs("redistribute")
     outputs_match_on_every_rank("redistribute", base, relaid, tmp_path)
-
-
-@pytest.mark.parametrize("name", sorted(FIXTURES))
-def test_every_fixture_lists_a_move_of_a_communication_row(name: str) -> None:
-    """The fixtures leave the rows somewhere to go, so the test above checks moves, not an empty list."""
-    _, moved = moved_programs(name)
-    assert moved, f"{name}: no legal move of a communication row is listed"

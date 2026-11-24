@@ -18,11 +18,11 @@ SCRIPT = REPO_ROOT / "scripts" / "attribute_moves.py"
 
 pytestmark = pytest.mark.e2e
 
-#: Three moves on jacobi_1d's canonical form as the route journals them, then a written kernel.
+#: Two moves of two families on jacobi_1d's canonical form as the route journals them, then a written kernel; each
+#: replayed call builds and times the program, so the journal stays short.
 JOURNAL = [
     ["apply_move", {"kind": "doall-fusion", "labels": ["doall9", "doall10"]}],
     ["apply_move", {"kind": "tile-doall", "labels": ["doall6"], "tile_sizes": [32]}],
-    ["apply_move", {"kind": "doall-fusion", "labels": ["doall7", "doall8"]}],
     ["write_kernel", {"name": "kernel_0", "source": "sha256:00", "language": "cpp"}],
 ]
 
@@ -38,9 +38,9 @@ def test_each_replayed_call_is_timed_and_named_by_family_up_to_the_first_written
     )  # fmt: skip
 
     result = json.loads(out.read_text())
-    assert [(row["index"], row["family"]) for row in result["rows"]] == [(0, "fusion"), (1, "tiling"), (2, "fusion")]
+    assert [(row["index"], row["family"]) for row in result["rows"]] == [(0, "fusion"), (1, "tiling")]
     assert all(row["time_us"] > 0 and row["ratio"] > 0 for row in result["rows"])
-    assert (result["replayed"], result["unreplayed"]) == (3, {"kernel code": 1})
+    assert (result["replayed"], result["unreplayed"]) == (2, {"kernel code": 1})
     assert set(result["log_share_per_family"]) == {"fusion", "tiling"}
 
 

@@ -1,12 +1,12 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Nonblocking communication patterns (``docs/design/comm-nodes.md``, sections 1 to 4), as the frontend builds them
-and canonicalization leaves them: one ``Wait`` per request, one ``Waitall`` over every request or over a slice of them, two exchanges whose waits complete in the opposite order
-to their starts, a halo exchange every time step, exchanges pre-posted one step ahead, a row-split Jacobi solver, and
+and canonicalization leaves them: one ``Wait`` per request, one ``Waitall`` over every request or over a slice of
+them, two exchanges whose waits complete in the opposite order to their starts, a halo exchange every time step, exchanges pre-posted one step ahead, a row-split Jacobi solver, and
 three programs that break the rules of a request in flight. Each wait must complete exactly the starts whose requests
-it reads, a wait moves only where nothing touches what is in flight, every move the session lists for a row applies,
-and the in-flight check (I2) names a program that writes a sent buffer or reads a received one before its wait.
-Nothing here runs MPI: ``tests/test_comm_ranks.py`` runs the same fixtures on ranks."""
+it reads, a wait moves only where nothing touches what is in flight, and the in-flight check (I2) names a program
+that writes a sent buffer or reads a received one before its wait. Nothing here runs MPI: ``tests/test_comm_ranks.py``
+applies every move the session lists for a row of the same fixtures and runs each on ranks."""
 
 import dace
 import pytest
@@ -38,7 +38,7 @@ from tactics.ir.comm import (
 )
 from tactics.records import MoveStatus
 from tactics.session import Session
-from tactics.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, accessed, in_flight_refusal, plan_lib_motion
+from tactics.stages.lib_motion import LIB_INTO, accessed, in_flight_refusal, plan_lib_motion
 
 #: The nonblocking fixtures that follow the rules, by name.
 FIXTURES: dict[str, DaceProgram] = {
@@ -79,26 +79,6 @@ def test_every_nonblocking_fixture_keeps_the_invariants(name: str) -> None:
     assert skeleton(sdfg) is not None, f"{name} communicates"
     assert isolation_refusal(sdfg) is None
     assert in_flight_refusal(sdfg) is None
-
-
-@pytest.mark.parametrize("name", sorted(FIXTURES))
-def test_every_listed_move_of_a_nonblocking_row_applies(name: str) -> None:
-    """A move the session lists for a communication row keeps the invariants, so applying it never answers illegal:
-    a listing that offered a move the invariants then refused would cost the agent a turn for nothing."""
-    session = canonical(FIXTURES[name])
-    rows = session.row_index()
-    moves = [
-        move
-        for kind in (LIB_BEFORE, LIB_AFTER)
-        for move in session.list_moves(kind)
-        if isinstance(rows[move.labels[0]][0], CommNode)
-    ]
-    assert moves, f"{name}: a communication row has somewhere to go"
-
-    for move in moves:
-        result = session.apply_move(move.kind, list(move.labels))
-        assert result.status is MoveStatus.APPLIED, (move, result.reason)
-        assert session.undo().status is MoveStatus.APPLIED
 
 
 def test_each_wait_of_one_request_completes_only_its_own_start() -> None:

@@ -31,76 +31,37 @@ from tactics.corpus.bench import CorpusKernel
 
 ATOL = 1e-8
 
-# the most complex corpus kernels that build + emit faithfully (from the emit-vs-SDFG sweep)
-# level-3 (the hardest dwarf tier) + complex level-2 dense-linear-algebra / stencils.
+# The kernels whose emission together reaches every branch of tactics.ir and tactics.corpus that the 45-kernel sweep
+# reached (greedy cover of per-kernel branch coverage, 2026-11-24: 8 kernels, 682 arcs), plus one stencil, one early
+# exit and one conditional reduction, whose values differ from the dense algebra's even where the branches do not.
+# Each case builds the SDFG oracle (15-25 s); the other 34 kernels of the sweep reached no further branch.
 SC_L1 = [
-    # level 3
-    "scientific_computing/graphical_models/hmm_forward/hmm_forward",
-    "scientific_computing/map_reduce/xsbench/xsbench",
-    "scientific_computing/structured_grids/deriche/deriche",
-    "scientific_computing/structured_grids/harris_corner/harris_corner",
-    "scientific_computing/dynamic_programming/pathfinder/pathfinder",
-    "scientific_computing/graph_traversal/bfs/bfs",
-    "scientific_computing/dense_linear_algebra/gaussian/gaussian",
-    "scientific_computing/dense_linear_algebra/scattering_self_energies/scattering_self_energies",
-    # level 2 (linear algebra + stencils)
-    "scientific_computing/dense_linear_algebra/k2mm/k2mm",
-    "scientific_computing/dense_linear_algebra/k3mm/k3mm",
-    "scientific_computing/dense_linear_algebra/gemm/gemm",
-    "scientific_computing/dense_linear_algebra/cholesky/cholesky",
-    "scientific_computing/dense_linear_algebra/lu/lu",
-    "scientific_computing/dense_linear_algebra/ludcmp/ludcmp",
     "scientific_computing/dense_linear_algebra/gramschmidt/gramschmidt",
-    "scientific_computing/dense_linear_algebra/syr2k/syr2k",
-    "scientific_computing/dense_linear_algebra/mvt/mvt",
-    "scientific_computing/dense_linear_algebra/atax/atax",
-    "scientific_computing/dense_linear_algebra/bicg/bicg",
-    "scientific_computing/dense_linear_algebra/trisolv/trisolv",
-    "scientific_computing/structured_grids/heat_3d/heat_3d",
-    "scientific_computing/structured_grids/fdtd_2d/fdtd_2d",
-    "scientific_computing/structured_grids/jacobi_2d/jacobi_2d",
-    "scientific_computing/structured_grids/adi/adi",
+    "scientific_computing/graphical_models/hmm_forward/hmm_forward",
+    "scientific_computing/graph_traversal/bfs/bfs",
+    "scientific_computing/map_reduce/xsbench/xsbench",
     "scientific_computing/graph_traversal/pagerank/pagerank",  # normalised power iteration -> well-conditioned
+    "scientific_computing/structured_grids/jacobi_2d/jacobi_2d",
 ]
 # Left out: azimint_hist reads one past its bin edges (test_corpus_emit pins that), and tsvc_2_s1221 / tsvc_2_s126
 # hold a Scan, whose pure expansion is a C++ tasklet the Python emitter refuses.
-#: Kernels whose eight-deep loop nest with small matrix products runs too long as Python at the default sizes.
-SMALL = {"scientific_computing/dense_linear_algebra/scattering_self_energies/scattering_self_energies": 2}
-# hardest loop_level_reasoning: multi-nest, control flow (break), conditional reductions, running
-# max/argmax, recurrences. loop_level_reasoning is a superset of TSVC-2 (the ``tsvc_2_<key>`` stems) and
-# of TSVC-2.5 (the descriptively-named kernels). s13110 is excluded: the installed corpus ships its
-# ``_dace.py`` with no co-located manifest, so it cannot be loaded as a registered kernel at all.
+# loop_level_reasoning is a superset of TSVC-2 (the ``tsvc_2_<key>`` stems) and of TSVC-2.5 (the descriptively-named
+# kernels): recurrences, multi-nest, an early exit (break) and a conditional reduction.
 LLR_L1 = [
+    "tsvc_2_s3111",
     "tsvc_2_s1113",
     "tsvc_2_s1244",
-    "tsvc_2_s152",
-    "tsvc_2_s2275",
-    "tsvc_2_s3111",
-    "tsvc_2_s3113",
-    "tsvc_2_s331",
-    "tsvc_2_s481",
-    "tsvc_2_s118",
-    "tsvc_2_s1213",
-    "tsvc_2_s1351",
-    "tsvc_2_s161",
-    "tsvc_2_s241",
-    "tsvc_2_s2711",
-    "tsvc_2_s112",
-    "tsvc_2_s114",
-    "cond_reduce_sym",
     "cond_reduce_sum",
-    "ext_break_capture",
     "ext_break_find_first",
 ]
 
 # cross-compiler subset: kernels whose nests lower + translate + compile cleanly in every language.
 # numpyto has no C++ target (the C++ lane would recompile the C, same toolchain), so the distinct
 # compilers are covered by C x {gcc, clang} + Fortran x {gfortran}.
+# gemm (matrix-matrix) and mvt (matrix-vector); k3mm is three gemms and atax is mvt's shape.
 SC_L2 = [
     "scientific_computing/dense_linear_algebra/gemm/gemm",
-    "scientific_computing/dense_linear_algebra/k3mm/k3mm",
     "scientific_computing/dense_linear_algebra/mvt/mvt",
-    "scientific_computing/dense_linear_algebra/atax/atax",
 ]
 # Only straight-line nests translate + compile identically in every language across gcc/clang/gfortran; a
 # nest carrying loop state (recurrence / masked reduction) diverges at the artificial nest boundary or hits
@@ -141,8 +102,7 @@ def dace_sizes(kernel: CorpusKernel, base: int = 6) -> dict[str, int]:
 
 def make_dace(short: str) -> Builder:
     kernel = corpus_kernel(short)
-    base = SMALL.get(short, 6)
-    return (lambda: kernel.to_sdfg(simplify=True)), dace_sizes(kernel, base), 0.0  # linear algebra: inputs in [0,1)
+    return (lambda: kernel.to_sdfg(simplify=True)), dace_sizes(kernel), 0.0  # linear algebra: inputs in [0,1)
 
 
 def make_llr(key: str) -> Builder:
