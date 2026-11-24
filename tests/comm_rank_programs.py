@@ -129,6 +129,57 @@ def halo_waits(
 
 
 @dace.program
+def halo_waitall(
+    a: dace.float64[N],
+    b: dace.float64[N],
+    c: dace.float64[N],
+    ghost: dace.float64[2],
+    left: dace.int32,
+    right: dace.int32,
+) -> None:
+    """A halo exchange completed by one ``Waitall`` over all four requests, after compute that touches neither the
+    sent nor the received buffer, and before the stencil that reads the ghost cells."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(a[0:1], left, 0, req[0])
+    MPI.COMM_WORLD.Isend(a[N - 1 : N], right, 1, req[1])
+    MPI.COMM_WORLD.Irecv(ghost[0:1], left, 1, req[2])
+    MPI.COMM_WORLD.Irecv(ghost[1:2], right, 0, req[3])
+    for i in dace.map[0:N]:
+        b[i] = a[i] * 2.0
+    dace.comm.Waitall(req)
+    c[0] = ghost[0] + b[0]
+    c[N - 1] = ghost[1] + b[N - 1]
+    for i in dace.map[1 : N - 1]:
+        c[i] = b[i] + a[i]
+
+
+@dace.program
+def halo_split_waitall(
+    a: dace.float64[N],
+    b: dace.float64[N],
+    c: dace.float64[N],
+    ghost: dace.float64[2],
+    left: dace.int32,
+    right: dace.int32,
+) -> None:
+    """A halo exchange whose receives complete in one ``Waitall`` over a slice of the requests and whose sends
+    complete in a second one at the end, after compute that only reads what they send."""
+    req = dace.define_local([4], dtype=MPI.Request)
+    MPI.COMM_WORLD.Isend(a[0:1], left, 0, req[0])
+    MPI.COMM_WORLD.Isend(a[N - 1 : N], right, 1, req[1])
+    MPI.COMM_WORLD.Irecv(ghost[0:1], left, 1, req[2])
+    MPI.COMM_WORLD.Irecv(ghost[1:2], right, 0, req[3])
+    for i in dace.map[0:N]:
+        b[i] = a[i] * 2.0
+    dace.comm.Waitall(req[2:4])
+    c[0] = ghost[0] + b[0]
+    c[N - 1] = ghost[1] + b[N - 1]
+    for i in dace.map[1 : N - 1]:
+        c[i] = b[i] + a[i]
+    dace.comm.Waitall(req[0:2])
+
+
+@dace.program
 def two_exchanges(
     a: dace.float64[N],
     x: dace.float64[N],
@@ -374,6 +425,8 @@ FIXTURES = {
     "halo_stencil": Fixture(halo_stencil, halo_in_place_inputs, ("ap", "b")),
     "halo_rows": Fixture(halo_rows, halo_rows_inputs, ("ap", "b")),
     "halo_waits": Fixture(halo_waits, halo_inputs, ("b", "c", "ghost")),
+    "halo_waitall": Fixture(halo_waitall, halo_inputs, ("b", "c", "ghost")),
+    "halo_split_waitall": Fixture(halo_split_waitall, halo_inputs, ("b", "c", "ghost")),
     "two_exchanges": Fixture(two_exchanges, two_exchanges_inputs, ("ghost_a", "ghost_x", "b")),
     "halo_steps": Fixture(halo_steps, halo_steps_inputs, ("ap", "b", "c")),
     "pipelined_rows": Fixture(pipelined_rows, ring_inputs, ("b", "d")),

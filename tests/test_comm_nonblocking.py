@@ -1,7 +1,7 @@
 # Copyright 2021 ETH Zurich and the NestForge authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Nonblocking communication patterns (``docs/design/comm-nodes.md``, sections 1 to 4), as the frontend builds them
-and canonicalization leaves them: one ``Wait`` per request, two exchanges whose waits complete in the opposite order
+and canonicalization leaves them: one ``Wait`` per request, one ``Waitall`` over every request or over a slice of them, two exchanges whose waits complete in the opposite order
 to their starts, a halo exchange every time step, exchanges pre-posted one step ahead, a row-split Jacobi solver, and
 three programs that break the rules of a request in flight. Each wait must complete exactly the starts whose requests
 it reads, a wait moves only where nothing touches what is in flight, every move the session lists for a row applies,
@@ -11,7 +11,15 @@ Nothing here runs MPI: ``tests/test_comm_ranks.py`` runs the same fixtures on ra
 import dace
 import pytest
 from comm_programs import overwrite_in_flight, read_before_wait, read_last_step_before_wait
-from comm_rank_programs import halo_steps, halo_waits, jacobi_rows, pipelined_rows, two_exchanges
+from comm_rank_programs import (
+    halo_split_waitall,
+    halo_steps,
+    halo_waitall,
+    halo_waits,
+    jacobi_rows,
+    pipelined_rows,
+    two_exchanges,
+)
 from dace.frontend.python.parser import DaceProgram
 from dace.libraries.comm.nodes.node import CommNode
 from dace.sdfg import nodes
@@ -35,6 +43,8 @@ from tactics.stages.lib_motion import LIB_AFTER, LIB_BEFORE, LIB_INTO, accessed,
 #: The nonblocking fixtures that follow the rules, by name.
 FIXTURES: dict[str, DaceProgram] = {
     "halo_waits": halo_waits,
+    "halo_waitall": halo_waitall,
+    "halo_split_waitall": halo_split_waitall,
     "two_exchanges": two_exchanges,
     "halo_steps": halo_steps,
     "pipelined_rows": pipelined_rows,
@@ -119,6 +129,51 @@ def test_the_wait_of_a_receive_does_not_move_past_the_reader_of_its_ghost_cell()
 def test_the_wait_of_a_send_moves_earlier_past_compute_that_only_reads_what_it_sends() -> None:
     sdfg = canonical(halo_waits).sdfg
     wait, state = waits_in_order(sdfg)[2]
+    order = program_order(sdfg)
+    compute = next(s for s in reversed(order[: order.index(state)]) if not holds_row(s))
+    reads, writes = accessed(compute)
+    assert "a" in reads and "a" not in writes, "the compute reads the sent buffer and does not write it"
+
+    move = plan_lib_motion((wait, state), (compute, None), "before")
+
+    assert callable(move), move
+
+
+def test_one_waitall_over_every_request_completes_all_four_starts() -> None:
+    sdfg = canonical(halo_waitall).sdfg
+    ((wait, state),) = waits_in_order(sdfg)
+
+    assert len(starts_of(sdfg, state, wait)) == 4
+    assert in_flight(sdfg, state, wait) == (frozenset({"a"}), frozenset({"ghost"}))
+
+
+def test_the_waitall_of_every_request_does_not_move_past_the_reader_of_the_ghost_cells() -> None:
+    sdfg = canonical(halo_waitall).sdfg
+    ((wait, state),) = waits_in_order(sdfg)
+    order = program_order(sdfg)
+    reader = next(s for s in order[order.index(state) + 1 :] if "ghost" in accessed(s)[0])
+
+    refused = plan_lib_motion((wait, state), (reader, None), "after")
+
+    assert isinstance(refused, str) and "ghost" in refused, refused
+
+
+def test_a_waitall_over_a_slice_completes_only_the_starts_of_its_slice() -> None:
+    sdfg = canonical(halo_split_waitall).sdfg
+    waits = waits_in_order(sdfg)
+    assert len(waits) == 2
+
+    completed = [starts_of(sdfg, state, wait) for wait, state in waits]
+    flights = [in_flight(sdfg, state, wait) for wait, state in waits]
+
+    assert [len(starts) for starts in completed] == [2, 2], completed
+    assert not {id(s) for _, s in completed[0]} & {id(s) for _, s in completed[1]}, "no start completes twice"
+    assert flights == [(frozenset(), frozenset({"ghost"})), (frozenset({"a"}), frozenset())]
+
+
+def test_the_waitall_of_the_sends_moves_earlier_past_compute_that_only_reads_what_they_send() -> None:
+    sdfg = canonical(halo_split_waitall).sdfg
+    wait, state = waits_in_order(sdfg)[1]
     order = program_order(sdfg)
     compute = next(s for s in reversed(order[: order.index(state)]) if not holds_row(s))
     reads, writes = accessed(compute)
