@@ -43,6 +43,20 @@ def kernels_with_work_between(A: dace.float64[N], B: dace.float64[N], C: dace.fl
             B[i] = B[i] * 0.5 + C[i]
 
 
+@dace.program
+def time_loops_in_a_branch(A: dace.float64[N], B: dace.float64[N], flag: dace.int64) -> None:
+    if flag > 0:
+        for _t in range(STEPS):
+            for i in dace.map[0:N]:
+                A[i] = A[i] * 0.5 + 1.0
+        for _t in range(STEPS):
+            for i in dace.map[0:N]:
+                B[i] = B[i] * 0.5 + A[i]
+    else:
+        for i in dace.map[0:N]:
+            A[i] = A[i] - 1.0
+
+
 def scoped(
     program: dace.frontend.python.parser.DaceProgram, tmp_path: Path, gpu: bool = False
 ) -> tuple[Session, list[str]]:
@@ -96,6 +110,18 @@ def test_consecutive_kernels_merge_into_one_persistent_kernel_that_computes_what
     assert done.status is MoveStatus.APPLIED, done.reason
     assert len({block for kernel, block in sut.persistent if kernel == merged}) == 2, "both time loops in one run"
     assert sut.check_numerics(expected()) == ""
+
+
+def test_consecutive_kernels_in_a_branch_are_offered_past_the_conditional(tmp_path: Path) -> None:
+    """spcl/tactics#110: the walk over the program's regions yields the conditional, which has no start block; its
+    branches are regions of their own and still offer their runs."""
+    sut, names = scoped(time_loops_in_a_branch, tmp_path)
+
+    offered = [m.labels for m in sut.list_scope_moves("run-on-cpu-persistent")]
+
+    assert len(names) == 2
+    assert sut.consecutive_kernels() == [tuple(names)]
+    assert tuple(names) in offered, "the two time loops of the branch are offered as one run"
 
 
 def test_kernels_with_a_doall_between_them_are_not_merged(tmp_path: Path) -> None:

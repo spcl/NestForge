@@ -30,7 +30,7 @@ import pydantic
 from dace.libraries.standard.nodes.external_call import ExternalCall, data_name, external_calls
 from dace.sdfg import nodes
 from dace.sdfg.performance_evaluation.helpers import get_uuid
-from dace.sdfg.state import ControlFlowBlock, LoopRegion, SDFGState
+from dace.sdfg.state import ControlFlowBlock, ControlFlowRegion, LoopRegion, SDFGState
 from dace.transformation.passes.megakernel.discovery import linear_chain
 from relayout.ops import Operation
 
@@ -310,6 +310,15 @@ def holds_doall(block: ControlFlowBlock) -> bool:
     return any(isinstance(n, nodes.MapEntry) for n, _ in block.all_nodes_recursive())
 
 
+def block_chain(region: ControlFlowRegion) -> list[ControlFlowBlock] | None:
+    """``region``'s blocks in order when they form one unconditional chain, else ``None``. A conditional, which the
+    walk over all regions yields beside its branches, has no start block and never forms one (spcl/tactics#110)."""
+    if region.start_block is None:
+        return None
+    chain: list[ControlFlowBlock] | None = linear_chain(region)
+    return chain
+
+
 def persistent_runs(body: dace.SDFG) -> list[tuple[str, ...]]:
     """What ``persistent-kernel`` is offered on in a kernel's ``body``: each for loop holding doalls, and each longest
     run of two or more blocks holding doalls in a region whose blocks follow one another; blocks without doalls between
@@ -317,7 +326,7 @@ def persistent_runs(body: dace.SDFG) -> list[tuple[str, ...]]:
     runs: list[tuple[str, ...]] = []
     for region in body.all_control_flow_regions(recursive=True):
         runs += [(b.label,) for b in region.nodes() if isinstance(b, LoopRegion) and b.loop_variable and holds_doall(b)]
-        with_doalls = [block.label for block in linear_chain(region) or [] if holds_doall(block)]
+        with_doalls = [block.label for block in block_chain(region) or [] if holds_doall(block)]
         if len(with_doalls) > 1:
             runs.append(tuple(with_doalls))
     return runs
@@ -367,7 +376,7 @@ def run_blocks(rows: Sequence[Row]) -> list[str] | Refused:
         if block not in found:
             found.append(block)
     region = found[0].parent_graph
-    order = linear_chain(region) or [found[0]]
+    order = block_chain(region) or [found[0]]
     if any(b.parent_graph is not region or b not in order for b in found):
         return Refused(
             f"persistent-kernel takes rows of one region that follow one another; {[b.label for b in found]} are not.",
@@ -386,7 +395,7 @@ def consecutive_refusal(names: Sequence[str], homes: Sequence[SDFGState]) -> Ref
     """Why the kernels ``names``, in the states ``homes``, are no consecutive kernels: they sit in different regions,
     a block between them holds a doall or another kernel, or their states hold work besides them."""
     region = homes[0].parent_graph
-    order = linear_chain(region) if all(home.parent_graph is region for home in homes) else None
+    order = block_chain(region) if all(home.parent_graph is region for home in homes) else None
     if order is None or not all(home in order for home in homes):
         return Refused(f"{', '.join(names)} are not kernels of one straight run of blocks.", Refusal.WRONG_ROW_KIND)
     span = order[min(map(order.index, homes)) : max(map(order.index, homes)) + 1]
@@ -1836,7 +1845,7 @@ class Session:
         runs: list[tuple[str, ...]] = []
         for region in self.sdfg.all_control_flow_regions(recursive=True):
             current: list[str] = []
-            for block in [*(linear_chain(region) or []), None]:
+            for block in [*(block_chain(region) or []), None]:
                 held = external_calls_in(block) if block is not None else []
                 if isinstance(block, SDFGState) and len(held) == 1 and not holds_doall(block):
                     current.append(held[0].name)
@@ -1924,7 +1933,7 @@ class Session:
             unset = self.unset_scope(name)
             if unset.status is not MoveStatus.APPLIED:
                 return Refused(str(unset.reason), Refusal.WRONG_ROW_KIND)
-        after = linear_chain(region) or []
+        after = block_chain(region) or []
         members = [i for i, block in enumerate(after) if block not in before or block in homes]
         labels = [block.label for block in after[members[0] : members[-1] + 1]]
         self.describe()  # the rows of the inlined blocks get their labels
