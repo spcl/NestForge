@@ -239,7 +239,20 @@ jobs:
 
   cloudsc:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 120
+    # The tests share nothing but the canonicalized program, which each runner builds in minutes: three runners cut
+    # the wall time from the sum of the tests to the slowest shard.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard:
+          - name: performance
+            select: tests/test_cloudsc_phases.py -k test_performance_reports
+          - name: phases
+            select: tests/test_cloudsc_phases.py -k "not test_performance_reports"
+          - name: moves
+            select: tests/test_cloudsc_moves.py
+    name: cloudsc (${{ matrix.shard.name }})
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -287,7 +300,7 @@ jobs:
           launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
           eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
-          pytest -m cloudsc --timeout=5400 --durations=15 -s
+          pytest -m cloudsc ${{ matrix.shard.select }} --timeout=5400 --durations=15 -s
 
   bench-tip:
     runs-on: ubuntu-latest
