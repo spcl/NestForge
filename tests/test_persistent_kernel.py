@@ -12,6 +12,7 @@ import numpy as np
 from dace.libraries.standard.nodes.external_call import external_calls
 
 from tactics.records import MoveStatus, Refusal
+from tactics.server import Setup, started_session
 from tactics.session import Session
 from tactics.stages.performance import Reference
 
@@ -157,3 +158,20 @@ def test_rows_of_two_regions_a_second_run_and_an_unknown_kernel_are_refused(tmp_
     assert (split.status, split.refusal) == (MoveStatus.ILLEGAL, Refusal.WRONG_ROW_KIND)
     assert (unknown.status, unknown.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
     assert (again.status, again.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
+
+
+def test_a_persistent_gpu_time_loop_of_2d_doalls_renders_as_one_megakernel(tmp_path: Path) -> None:
+    """spcl/tactics#113: ``jacobi_2d``'s time loop on the GPU, persistent: its 2-D doalls take the megakernel's 1-D
+    block, so the GPU tiling makes no 16x16 thread blocks that conflict with the megakernel's launch."""
+    sut = started_session(Setup("jacobi_2d", "S", "float64", True, str(tmp_path)), codegen="first")
+    sut.run_defaults("moves")
+    kernel = sut.set_scope(["for0"]).reason
+    sut.run_defaults("scopes")
+
+    done = sut.apply_move("run-on-gpu-persistent", [kernel])
+    sut.finalize_scope()
+    src = sut.default_kernel(kernel)
+
+    assert done.status is MoveStatus.APPLIED, done.reason
+    assert src.device == "gpu" and src.device_unit is not None
+    assert len(re.findall(r"__global__[^;{]*run_megakernel", src.device_unit.read_text())) == 1

@@ -2,9 +2,10 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Bench requests](bench-requests.md)
 
-Status: design. Written 2026-11-24 against NestForge `b98494f`. It builds on the survey of 2026-11-19
-(`nestforge-workspace/notes/mlir-llvm-agent/survey.md`, pass names checked in the LLVM 22.1.2 headers and tools) and
-the skill draft beside it (`SKILL.md`). Nothing here is built.
+Status: CPU part built (2026-11-24): `tactics/build/pass_moves.py`, the session calls below, and the
+`nestforge-passes` packet. The GPU moves wait on bench request B16. Written against NestForge `b98494f`; it builds on
+the survey of 2026-11-19 (`nestforge-workspace/notes/mlir-llvm-agent/survey.md`, pass names checked in the LLVM 22.1.2
+headers and tools) and the skill draft beside it (`SKILL.md`).
 
 ## Goal
 
@@ -36,6 +37,14 @@ So ingestion, the lowering, the back end, the oracle check and the rollback exis
 step between: the agent writes one opaque string, sees no loops, and learns only a time.
 
 ## Design
+
+### As built
+
+The moves live in `self.pipeline = ("moves", <JSON of the phase and the moves>)` instead of two new tuples, so
+`set_pipeline`'s rollback, the checkpoints and `pipeline_build` take them unchanged (`PIPELINES["moves"]` is
+`build_pass_moves`). The tools carry their own names beside NestForge's: `view_ir loops=[...]`, `list_pass_moves`,
+`apply_pass_move kind arguments` (`kind=rollback` takes the last change back), `advance_pass_phase`. The LLVM outline
+prints each loop's header block and `vec=W`, the widest vector its header computes on; the trip count is left out.
 
 ### The program
 
@@ -134,7 +143,7 @@ without it today: request B16 in [bench-requests.md](bench-requests.md).
   2. `tile` on the 2D stencil gives four `for` rows, and the program still matches its oracle;
   3. a move that changes nothing answers `no change` and records nothing;
   4. `rollback` after two moves gives back the IR and labels after the first;
-  5. an LLVM `vectorize` with width 4 shows `vec=4x1` in the outline;
+  5. an LLVM `vectorize` with width 4 shows `vec=4` in the outline;
   6. a pass that fails (an option out of range) answers `failed` with the tool's message and changes nothing;
   7. two LLVM moves with different knobs keep their own knobs (two `opt` calls);
   8. on a GPU target, `tile-parallel` and `map-to-gpu` on `jacobi_2d` give one kernel launch per nest, and the
