@@ -122,10 +122,11 @@ def test_rollback_after_two_moves_gives_back_the_loops_after_the_first(tmp_path:
     sut = session(tmp_path)
     sut.apply_pass_move("tile", {"tile_sizes": [8, 8]})
     after_first = sut.view_ir()
-    sut.apply_pass_move("unroll", {"factor": 2})
+    second = sut.apply_pass_move("parallelize")  # the stencil's loops are parallel, so this always changes them
 
     sut.apply_pass_move("rollback")
 
+    assert second.status is MoveStatus.APPLIED, second.reason
     assert sut.view_ir() == after_first
 
 

@@ -61,7 +61,9 @@ MLIR_KINDS: dict[str, PassKind] = {
     "parallelize": PassKind("affine-parallelize"),
 }
 LLVM_KINDS: dict[str, PassKind] = {
-    "cleanup": PassKind("function(sroa,early-cse,instcombine,simplifycfg)"),
+    "cleanup": PassKind(
+        "cgscc(inline),function(sroa,early-cse,instcombine,simplifycfg)", help="inlines calls, then scalar cleanup"
+    ),
     "hoist-invariant": PassKind("loop-mssa(licm)"),
     "interchange": PassKind("loop(loop-interchange)"),
     "fuse": PassKind("loop-fusion"),
@@ -172,12 +174,18 @@ def tools(compiler: str) -> dict[str, str]:
     return {tool: sibling(compiler, tool) or tool for tool in TOOLS}
 
 
+def front_end_flags(compiler: str) -> tuple[str, ...]:
+    """cgeist's flags for the moves: -O2, so the unit's index helpers are inlined and its accesses are affine; at -O0
+    they stay calls, which no tiling can see through and no LLVM vectorizer takes (beverin job 762802)."""
+    return tuple("-O2" if flag == "-O0" else flag for flag in cgeist_flags(compiler))
+
+
 def mlir_after(unit: Path, compiler: str, moves: Sequence[PassMove]) -> Path:
     """The affine MLIR of ``unit`` after the MLIR ``moves``, beside it."""
     found = tools(compiler)
     affine, moved = unit.with_suffix(".mlir"), unit.with_suffix(".moved.mlir")
     if not affine.exists():
-        run("cgeist", [found["cgeist"], str(unit), *cgeist_flags(compiler), "-o", str(affine)])
+        run("cgeist", [found["cgeist"], str(unit), *front_end_flags(compiler), "-o", str(affine)])
     run(
         "MLIR moves", [found["polygeist-opt"], str(affine), f"--pass-pipeline={mlir_pipeline(moves)}", "-o", str(moved)]
     )

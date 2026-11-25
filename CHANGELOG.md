@@ -6,7 +6,8 @@
 
 - **Pass-move agent** (`nestforge-passes`, [design](docs/design/mlir-llvm-agent.md)): MLIR moves on the affine loops
   Polygeist raises from each CPU kernel, then LLVM moves on the IR the fixed lowering writes, one named pass at a
-  time; `view_ir` shows the loops after each move, a move that changes nothing or fails is refused, and rollback takes
+  time (cgeist at -O2, so the unit's index helpers are inlined and its accesses affine); `view_ir` shows the loops
+  after each move, a move that changes nothing or fails is refused, and rollback takes
   a move back. GPU kernels wait on the bench image's MLIR CUDA runtime (bench request B16).
 
 ### Fixed
@@ -15,8 +16,10 @@
 - `set-schedule-gpu` with a block shorter than the doall's rank pads it with ones, as CUDA reads `dim3` (#112).
 - `run-on-gpu-persistent` sets the megakernel's block size on the loops it keeps, so the render no longer conflicts
   with their thread-block maps (#113).
-- `srad`'s default program builds again: CPF declared no `tmp61` in its loop kernel; fixed in DaCe extended 1.0.1,
-  which tactics now requires (#114).
+- The MLIR baseline builds again in the judge image: cgeist gets the compiler's builtin headers (`stddef.h`), and
+  the example pipelines nest function passes under `func.func`.
+- `srad`'s default program fails to build with DaCe extended 1.0.0 (CPF declares no `tmp61` in its loop kernel);
+  DaCe extended 1.0.1 fixes it, and the `dace-extended>=1.0.0` requirement picks it up once released (#114).
 
 ### Changed
 
