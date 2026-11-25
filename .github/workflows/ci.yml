@@ -74,16 +74,18 @@ jobs:
   cloudsc:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # The tests share nothing but the canonicalized program, which each runner builds in minutes: two runners of
-    # about the same length cut the wall time to the slower one.
+    # The tests share nothing but the canonicalized program, which each runner builds in minutes: three runners of
+    # 20-30 minutes each cut the wall time to the slowest (one runner for performance and moves took 43 minutes).
     strategy:
       fail-fast: false
       matrix:
         shard:
-          - name: performance and moves
-            select: tests/test_cloudsc_moves.py tests/test_cloudsc_phases.py -k "test_performance_reports or test_random_moves"
+          - name: performance
+            select: tests/test_cloudsc_phases.py -k test_performance_reports
           - name: phases
             select: tests/test_cloudsc_phases.py -k "not test_performance_reports"
+          - name: moves
+            select: tests/test_cloudsc_moves.py
     name: cloudsc (${{ matrix.shard.name }})
     steps:
       - uses: actions/checkout@v4
