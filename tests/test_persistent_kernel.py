@@ -44,6 +44,19 @@ def two_loops(a: dace.float64[N], b: dace.float64[N]) -> None:
             a[i] = b[i]
 
 
+@dace.program
+def steps_with_if(a: dace.float64[N], b: dace.float64[N]) -> None:
+    for t in range(T):
+        if t > 0:
+            for i in dace.map[0:N]:
+                b[i] = a[i] + b[i]
+            for i in dace.map[0:N]:
+                a[i] = b[i] * 0.5
+        else:
+            for i in dace.map[0:N]:
+                b[i] = a[i]
+
+
 def offered(sut: Session, kernel: str) -> list[tuple[str, ...]]:
     """The rows of ``kernel`` that list_moves offers to persistent-kernel, one tuple per offer."""
     return [move.labels for move in sut.list_moves("persistent-kernel", scope=kernel)]
@@ -175,3 +188,16 @@ def test_a_persistent_gpu_time_loop_of_2d_doalls_renders_as_one_megakernel(tmp_p
     assert done.status is MoveStatus.APPLIED, done.reason
     assert src.device == "gpu" and src.device_unit is not None
     assert len(re.findall(r"__global__[^;{]*run_megakernel", src.device_unit.read_text())) == 1
+
+
+def test_a_kernel_whose_time_loop_holds_an_if_lists_its_moves(tmp_path: Path) -> None:
+    """spcl/tactics#110: the walk over the kernel's regions yields the conditional, which has no start block."""
+    sut = Session(steps_with_if.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE, "T": STEPS})
+    sut.canonicalize()
+    (loop,) = [label for label in sut.row_index() if label.startswith("for")]
+    assert sut.set_scope([loop]).status is MoveStatus.APPLIED
+    (ext,) = external_calls(sut.sdfg)
+
+    assert offered(sut, ext.name) == [(loop,)], "the time loop holding the if is offered whole"
+    assert sut.list_scope_moves(scope=ext.name), "the kernel's scope moves are listed"
+    assert sut.list_scope_moves(), "and so are every kernel's"

@@ -16,6 +16,9 @@
 - `set-schedule-gpu` with a block shorter than the doall's rank pads it with ones, as CUDA reads `dim3` (#112).
 - `run-on-gpu-persistent` sets the megakernel's block size on the loops it keeps, so the render no longer conflicts
   with their thread-block maps (#113).
+- `list_moves` and `list_scope_moves` inside a kernel whose body holds an `if` no longer raise `KeyError: None`:
+  the walk over regions skips a conditional, whose branches are regions of their own (#110, thanks to Nicolas
+  Pereira Ribeiro, #115).
 - The MLIR baseline builds again in the judge image: cgeist gets the compiler's builtin headers (`stddef.h`), and
   the example pipelines nest function passes under `func.func`.
 - `srad`'s default program fails to build with DaCe extended 1.0.0 (CPF declares no `tmp61` in its loop kernel);
