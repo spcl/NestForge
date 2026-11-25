@@ -120,9 +120,12 @@ def test_a_move_that_changes_no_kernel_is_refused_and_records_nothing(tmp_path: 
 @pytest.mark.vendor  # Polygeist (cgeist, polygeist-opt) is in the AMD judge image, not on CI
 def test_rollback_after_two_moves_gives_back_the_loops_after_the_first(tmp_path: Path) -> None:
     sut = session(tmp_path)
-    sut.apply_pass_move("tile", {"tile_sizes": [8, 8]})
+    # both moves change the kernel; parallelize, unroll-jam and most others change nothing on it: cgeist linearizes
+    # the accesses with the runtime row length (i * symbol(N)), which MLIR's analyses cannot see through, and after
+    # a tiling the tile loops' min upper bounds also stop a partial unroll (ault20, judge-amd image, 11-25)
+    sut.apply_pass_move("unroll", {"factor": 2})
     after_first = sut.view_ir()
-    second = sut.apply_pass_move("parallelize")  # the stencil's loops are parallel, so this always changes them
+    second = sut.apply_pass_move("tile", {"tile_sizes": [8, 8]})
 
     sut.apply_pass_move("rollback")
 

@@ -8,7 +8,9 @@
   Polygeist raises from each CPU kernel, then LLVM moves on the IR the fixed lowering writes, one named pass at a
   time (cgeist at -O2, so the unit's index helpers are inlined and its accesses affine); `view_ir` shows the loops
   after each move, a move that changes nothing or fails is refused, and rollback takes
-  a move back. GPU kernels wait on the bench image's MLIR CUDA runtime (bench request B16).
+  a move back. GPU kernels wait on the bench image's MLIR CUDA runtime (bench request B16). On a kernel whose sizes
+  are runtime arguments, cgeist multiplies each index by the row length, which MLIR's analyses cannot see through:
+  tiling and unrolling apply there, `parallelize` and most other MLIR moves change nothing.
 
 ### Fixed
 
