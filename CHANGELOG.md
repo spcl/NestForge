@@ -19,7 +19,7 @@
 - The MLIR baseline builds again in the judge image: cgeist gets the compiler's builtin headers (`stddef.h`), and
   the example pipelines nest function passes under `func.func`.
 - `srad`'s default program fails to build with DaCe extended 1.0.0 (CPF declares no `tmp61` in its loop kernel);
-  DaCe extended 1.0.1 fixes it, and the `dace-extended>=1.0.0` requirement picks it up once released (#114).
+  DaCe extended 1.0.1 fixes it, and tactics requires it (#114).
 
 ### Changed
 
