@@ -14,7 +14,7 @@ DaCe extended `561defb2a6`, and HPCAgent-Bench `cc1124254`.
 | Page | Feature | Needs from the bench | Can start |
 |---|---|---|---|
 | [comm-nodes.md](comm-nodes.md) | programs that communicate between MPI ranks, and the overlap of communication with compute | B1 to B5, B11, B12 | packages 1 to 7, 11, 12, 14, 17, 18 built; 8 to 10, 15, 16 wait for the bench |
-| [schedule-moves.md](schedule-moves.md) | `for-to-doall` (with `force`), `set-schedule-cpu`, `set-schedule-gpu`, schedules in the tree | none | built; `guided` and a chunk on the GPU need dace-extended 1.0.1 |
+| [schedule-moves.md](schedule-moves.md) | `for-to-doall` (with `force`), `set-schedule-cpu`, `set-schedule-gpu`, schedules in the tree | none | built |
 | [bench-requests.md](bench-requests.md) | the sixteen requests to HPCAgent-Bench, B1 to B16 | | |
 | [persistent-kernel.md](persistent-kernel.md) | `persistent-kernel`: a time loop of kernels as one launch (megakernel) | none | built on the CPU; GPU run pending |
 | [transformation-requests.md](transformation-requests.md) | `request_transformation`: the agent asks for a move no family offers | none | request, clustering, the authored catalogue and the gate built; the authoring agent is the owner's step |

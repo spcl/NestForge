@@ -15,6 +15,7 @@ from dace.sdfg.state import SDFGState
 from dace.transformation.helpers import nest_state_subgraph
 from dace.transformation.passes.canonicalize import canonicalize as dace_canonicalize
 from dace.transformation.passes.canonicalize import stage_labels
+from dace.transformation.passes.canonicalize.forward_copy_maps import ForwardCopyMaps
 from dace.transformation.passes.canonicalize.normalize_map_body import NormalizeMapBody
 from dace.transformation.passes.canonicalize.pipeline import StructuralCleanup, after_fusion_units, prepared
 from dace.transformation.passes.insert_explicit_copies import InsertExplicitCopies
@@ -82,8 +83,7 @@ def move_cleanup(sdfg: dace.SDFG) -> None:
     (``snapshot-reads``) is the move, and forwarding its readers back to the copied array would undo it.
     Canonicalization forwards the copies the program came with."""
     for unit in StructuralCleanup().units():
-        # shortcut: by name, since DaCe extended 1.0.0 has no ForwardCopyMaps; import it once the pin is >= 1.0.1
-        if type(unit).__name__ != "ForwardCopyMaps":
+        if not isinstance(unit, ForwardCopyMaps):
             unit.apply_pass(sdfg, {})
     normalize_map_bodies(sdfg)
 
