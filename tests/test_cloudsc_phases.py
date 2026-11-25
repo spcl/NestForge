@@ -109,7 +109,8 @@ def test_performance_reports_a_correct_program_its_offloading_and_every_kernel(
 ) -> None:
     _, inputs, reference = cloudsc_monolith
 
-    report = scoped.performance(inputs, reference)
+    # the first build per kernel: what is reported is under test here, the stage 6 sweep in the sweep test below
+    report = scoped.performance(inputs, reference, codegen="first")
 
     kernels = {ext.name for ext in external_calls(scoped.sdfg)}
     assert report.structured.correct is True, report.structured
@@ -118,7 +119,7 @@ def test_performance_reports_a_correct_program_its_offloading_and_every_kernel(
     assert {kernel.name for kernel in report.kernels} == kernels
     assert any(kernel.correct for kernel in report.kernels)
     assert all(kernel.correct is not False for kernel in report.kernels), [k for k in report.kernels if not k.correct]
-    assert scoped.performance(inputs, reference) is report, "an unchanged program is measured once"
+    assert scoped.performance(inputs, reference, codegen="first") is report, "an unchanged program is measured once"
 
 
 def test_a_kernel_takes_back_its_own_source_and_refuses_a_wrong_entry(scoped: Session) -> None:
