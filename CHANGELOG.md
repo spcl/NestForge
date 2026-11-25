@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.1.1 (unreleased)
+## 0.1.1 (2026-11-26)
+
+The first release on PyPI.
 
 ### Added
 
@@ -52,7 +54,7 @@
 
 ## 0.1.0 (2026-11-23)
 
-The first release, published on PyPI as `tactics` (formerly NestForge). Tactics lets an agent optimize a whole DaCe
+The first version, as `tactics` (formerly NestForge); it was not uploaded to PyPI, where 0.1.1 is the first. Tactics lets an agent optimize a whole DaCe
 program only through legal, checked moves: a tactic is a transformation rule, a move applies one tactic to labeled
 rows of the program, and the ordered moves of an episode are its recipe, which replays the result.
 
