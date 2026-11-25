@@ -31,7 +31,7 @@ dependencies = [
     "dace-extended>=1.0.2",
     # The bench plugin (plugin/tactics) runs on the agent side too: hpcagent-bench brings its agent runtime
     # (hpcagent-agent, built from the same repository).
-    "hpcagent-bench>=1.0.0",
+    "hpcagent-bench>=1.0.1",
     "dace-relayout>=0.1.2",
     # tactics.mcp_server: the tools as an MCP server (the low-level Server of the 2.x SDK).
     "mcp>=2.3",
