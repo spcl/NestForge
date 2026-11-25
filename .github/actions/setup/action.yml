@@ -39,7 +39,7 @@ runs:
       if: inputs.bench-tip == 'true'
       shell: bash
       run: python scripts/bump_deps.py && git diff pyproject.toml
-    - run: uv pip install -e . --group dev
+    - run: uv pip install -e '.[bench]' --group dev
       shell: bash
     # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm runner
     # checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).

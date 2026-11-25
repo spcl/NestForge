@@ -42,6 +42,9 @@ The first release on PyPI.
 
 - Requires DaCe extended 1.0.2 (`dace-extended>=1.0.2`): it fixes `srad`'s build (#114), and 1.0.1 broke the CloudSC
   canonicalization.
+- `pip install tactics` no longer pulls HPCAgent-Bench: the bench hosts tactics as a plugin and loads it. The
+  functions that grade, finalize or emit the bench corpus import it; install it with `pip install "tactics[bench]"`
+  (a checkout: `uv sync --extra bench --group dev`).
 - The bench plugin is named `tactics` everywhere, as HPCAgent-Bench 1.0.2 expects: plugin name, judge route
   `/tactics/<tool>`, packets `tactics` and `tactics-*`, optimizers `*_tactics_*`, settings `TACTICS_*` (were
   `NESTFORGE_*`) and the record file `tactics.json`. Runs made before keep their `nestforge` names.

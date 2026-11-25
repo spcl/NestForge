@@ -5,7 +5,7 @@
 PyPI release: writes ``hpcagent-bench`` into pyproject.toml's ``[tool.uv.sources]`` (adding the table when absent),
 which a checkout's ``uv sync`` or ``uv pip install -e .`` reads. CI's bench-tip job runs it; main itself installs the
 bench, DaCe extended, dace-relayout and FP-Arena from PyPI. Then reinstall and test:
-``python scripts/bump_deps.py && uv pip install -e . --group dev && pytest``.
+``python scripts/bump_deps.py && uv pip install -e '.[bench]' --group dev && pytest``.
 """
 
 import re
