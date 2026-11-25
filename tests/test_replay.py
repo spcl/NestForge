@@ -130,6 +130,9 @@ def test_scope_refuses_a_filter_nothing_matches() -> None:
 
 
 @pytest.mark.integration
+# icon_aes_graupel runs stage 2 three times after a long canonicalization: 850-900 s on a CI runner, so the
+# suite-wide 900 s cut it off mid-run (run 45573051650); 1800 s still catches a hang
+@pytest.mark.timeout(1800)
 @pytest.mark.parametrize("path", SOLUTIONS, ids=[p.stem for p in SOLUTIONS])
 def test_every_solution_replays_correctly_and_rolls_back_to_the_canonical_program(
     path: Path, monkeypatch: pytest.MonkeyPatch
