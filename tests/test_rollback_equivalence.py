@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``rollback`` after any move gives back the program before it: the same SDFG, the same row labels and the same tree
 text. The skill page tells the agent to undo a move with ``rollback``, never with its inverse move, so this must hold

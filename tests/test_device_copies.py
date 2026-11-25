@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The host/device copies placement reports (:func:`device_copies`) on hand-built programs: an empty memlet is no copy,
 and a copy inside a nested SDFG or made by a ``CopyLibraryNode`` is one. Placing a real program is
@@ -21,6 +21,7 @@ def host_and_device(name: str, storage: dace.StorageType = dace.StorageType.GPU_
     return sdfg
 
 
+# Reproducer: finalize_scope counted an ordering edge as a host-device copy (job 5372503)
 def test_an_empty_memlet_between_memory_spaces_is_no_copy() -> None:
     """An empty memlet only orders its two accesses: the GPU default of a map feeding a recurrence has one, which
     ``finalize_scope`` answered as a copy (and counting its bytes failed every measurement, job 5372503)."""

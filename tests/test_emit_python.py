@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The Python emitter, one construct per test: the emitted text has the expected shape and the function computes
 what a hand-written NumPy reference computes. Every buffer is allocated by the caller, as the C kernels do."""
@@ -770,9 +770,10 @@ def test_dace_integer_division_heads_become_python_operators_with_their_meaning(
     assert eval(ceil_text, {"a": a, "b": b}) == math.ceil(a / b)  # noqa: S307
 
 
+# Reproducer: ceiling() in a loop bound reached the oracle undefined (#52, conv2d_gelu_global_avg_pool)
 @pytest.mark.parametrize("a, b", [(7, 2), (-7, 2), (8, 4), (0, 3), (5, 1)])
 def test_sympys_ceiling_in_a_loop_bound_becomes_an_integer(a: int, b: int) -> None:
-    """spcl/NestForge#52 (conv2d_gelu_global_avg_pool): a size printed as ``ceiling(...)`` reached the oracle as an
+    """spcl/tactics#52 (conv2d_gelu_global_avg_pool): a size printed as ``ceiling(...)`` reached the oracle as an
     undefined name. It must be an ``int``, since it ends up in ``range``."""
     names = Names(frozenset(), frozenset())
     quotient, plain = expr("ceiling(a / b)", names), expr("ceiling(a - b) + 1", names)
@@ -924,6 +925,7 @@ def test_a_nest_that_writes_a_row_is_folded_into_a_copy_of_the_row_it_held() -> 
     assert "np.copy(acc[0:N])" in source
 
 
+# Reproducer: emitter refused the pure Dot's WCR under a map (#80, gramschmidt)
 def test_a_pure_dot_expansion_under_a_map_adds_its_value_to_what_the_target_held() -> None:
     """#80: gramschmidt's ``inline-library[lib_blas0]``. The pure Dot sets ``_result = 0``, then accumulates into it
     with the same WCR the outer edge has; the emitter refused it as ``writes through a write-conflict resolution``."""
@@ -965,6 +967,7 @@ def gramschmidt(A: dace.float64[M, N], Q: dace.float64[M, N], R: dace.float64[N,
         A[:, k + 1 :] = A[:, k + 1 :] - Q[:, k][:, None] * R[k, k + 1 :][None, :]
 
 
+# Reproducer: oracle raised UnboundLocalError on a WCR-only scalar (#80, gramschmidt)
 def test_a_transient_scalar_no_other_node_writes_starts_from_the_identity_on_each_loop_iteration() -> None:
     """#80, gramschmidt after ``inline-library[lib_blas0]``: the pure Dot adds into the transient ``nrm`` through an outer
     WCR, and nothing else writes ``nrm``. Reading it first raised ``UnboundLocalError`` in the oracle, and would carry the

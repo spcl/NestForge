@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A sequential kernel the agent runs on the GPU stays a valid program and renders its CUDA source (#93), without a
 GPU: a scalar the kernel reads on the host and the device writes, and a library fill placement already offloaded."""

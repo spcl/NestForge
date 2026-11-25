@@ -1,9 +1,9 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Count the non-reasoning tokens of a fixed sequence of NestForge calls: deterministic, no model.
+"""Count the non-reasoning tokens of a fixed sequence of Tactics calls: deterministic, no model.
 
 Two parts are counted per call: the call the agent writes (the tool's name and its arguments as JSON) and the answer
-it reads back. Reasoning is not counted: it is the model's, and no layout of NestForge's changes it directly.
+it reads back. Reasoning is not counted: it is the model's, and no layout of Tactics' changes it directly.
 
 The calls run on a real session of a bench kernel through :func:`tactics.server.answer`, as the plugin's route runs
 them, and each answer is rendered exactly as the agent reads it: the route's ``ToolAnswer`` as JSON, which the
@@ -12,17 +12,17 @@ bench's MCP server re-serializes with ``json.dumps(indent=2, sort_keys=True)``. 
 answer's tokens times the calls after it.
 
 The calls come from a JSONL file of ``[tool, arguments]`` (a run's move journal, or a sequence written by hand), or
-from an agent transcript (``--transcript``), whose NestForge calls are taken in order. Bench calls (``score``,
-``submit``, ``profile``) are not NestForge's and are skipped; so are the timed tools unless ``--measure``.
+from an agent transcript (``--transcript``), whose Tactics calls are taken in order. Bench calls (``score``,
+``submit``, ``profile``) are not Tactics' and are skipped; so are the timed tools unless ``--measure``.
 
     python scripts/answer_tokens.py --kernel pagerank --calls calls.jsonl --tokenizer tokenizer.json
     python scripts/answer_tokens.py --kernel pagerank --transcript transcript.jsonl --tokenizer tokenizer.json \\
         --format v1 --out answers.csv
 
-``--recorded`` counts a transcript as it happened instead: every tool call, NestForge's or a free-form agent's
+``--recorded`` counts a transcript as it happened instead: every tool call, Tactics' or a free-form agent's
 (``Bash``, ``Read``, ``Edit``), with the result the agent read. Shell commands count as read (``cat``, ``grep``,
 ``sed -n``), edit (``sed -i``, a heredoc, ``>``), build or run, so a free-form run's read-edit-build loop and a
-NestForge run's calls compare on one tokenizer:
+Tactics run's calls compare on one tokenizer:
 
     python scripts/answer_tokens.py --transcript freeform.jsonl --recorded --tokenizer o200k_base
 """
@@ -54,7 +54,7 @@ from tactics.stages.performance import Performance
 
 
 class ToolAnswer(JudgeAnswer):
-    """The plugin route's answer to a NestForge call (``plugin/tactics/routes/nestforge.py``), which the bench loads
+    """The plugin route's answer to a Tactics call (``plugin/tactics/routes/tactics.py``), which the bench loads
     as a plugin and this script cannot import; a test keeps the two alike."""
 
     tool: str
@@ -129,7 +129,7 @@ def compact(value: Any, depth: int = 0) -> list[str]:
 
 
 def rendered_v2(tool: str, reply: Reply) -> str:
-    """A prototype of plain-text answers (not built in NestForge): a status word first, one line per record, no
+    """A prototype of plain-text answers (not built in Tactics): a status word first, one line per record, no
     keys for kind and status, defaults and nulls left out, numbers to 3 significant digits, text tools as their
     text. The bench's MCP server still wraps it as one JSON string."""
     if reply.error:
@@ -143,16 +143,16 @@ def rendered_v2(tool: str, reply: Reply) -> str:
     return json.dumps({"ok": not reply.error, "text": text}, indent=2, sort_keys=True)
 
 
-#: The NestForge plugin folder, the bench's user plugin that renders the answers the agent reads.
+#: The Tactics plugin folder, the bench's user plugin that renders the answers the agent reads.
 PLUGIN = REPO_ROOT / "plugin" / "tactics"
 
 
 def plugin_module(name: str) -> Any:
-    """The plugin's module ``name`` (``answers``, ``wire``), importable once the bench loaded NestForge's plugin."""
+    """The plugin's module ``name`` (``answers``, ``wire``), importable once the bench loaded Tactics' plugin."""
     os.environ["HPCAGENT_BENCH_USER_PLUGIN_DIRS"] = str(PLUGIN)
     plugins.load()
     agent_plugins.import_tools()
-    return importlib.import_module(f"hpcagent_bench_plugins.nestforge.{name}")
+    return importlib.import_module(f"hpcagent_bench_plugins.tactics.{name}")
 
 
 def invalid_arguments(tool: str, arguments: dict[str, Any]) -> Reply | None:
@@ -227,7 +227,7 @@ def tool_name(name: str) -> str:
 
 
 def transcript_calls(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]]]:
-    """The NestForge calls of an agent transcript (Claude Code's JSONL), in order, each tool use once."""
+    """The Tactics calls of an agent transcript (Claude Code's JSONL), in order, each tool use once."""
     seen: set[str] = set()
     for line in lines:
         if not line.strip(PADDING):
@@ -245,7 +245,7 @@ def transcript_calls(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]
 
 
 def journal_calls(lines: Iterable[str]) -> Iterator[tuple[str, dict[str, Any]]]:
-    """``[tool, arguments]`` per line, as NestForge's move journal writes them."""
+    """``[tool, arguments]`` per line, as Tactics' move journal writes them."""
     for line in lines:
         if line.strip():
             tool, arguments = json.loads(line)
@@ -272,7 +272,7 @@ def result_text(content: Any) -> str:
 
 
 def recorded_calls(lines: Iterable[str]) -> Iterator[Recorded]:
-    """Every tool use of an agent transcript (Claude Code's JSONL), NestForge's or not, with its recorded result,
+    """Every tool use of an agent transcript (Claude Code's JSONL), Tactics' or not, with its recorded result,
     in order, each once. A tool use without a result (the run ended) counts with an empty one."""
     uses: dict[str, tuple[str, dict[str, Any]]] = {}
     results: dict[str, tuple[str, bool]] = {}
@@ -436,7 +436,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--datatype", default="float64")
     source = parser.add_mutually_exclusive_group(required=True)
     source.add_argument("--calls", type=Path, help="JSONL of [tool, arguments], e.g. a move journal.")
-    source.add_argument("--transcript", type=Path, help="An agent transcript; its NestForge calls are replayed.")
+    source.add_argument("--transcript", type=Path, help="An agent transcript; its Tactics calls are replayed.")
     parser.add_argument(
         "--tokenizer",
         default="o200k_base",
@@ -449,7 +449,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument(
         "--recorded",
         action="store_true",
-        help="With --transcript: count every tool call (Bash, Read, Edit, NestForge) and the result recorded for it, "
+        help="With --transcript: count every tool call (Bash, Read, Edit, Tactics) and the result recorded for it, "
         "nothing replayed; shell commands count as read, edit, build or run.",
     )
     args = parser.parse_args(argv)

@@ -1,6 +1,6 @@
 # Tactics
 
-Tactics (formerly NestForge) lets an agent optimize a DaCe program only through legal, checked moves. A tactic is a
+Tactics (formerly Tactics) lets an agent optimize a DaCe program only through legal, checked moves. A tactic is a
 transformation rule (`tile-for`, `interchange-for`, `doall-fusion`, ...); a move applies one tactic to labeled rows
 with its arguments; the ordered moves of an episode are its recipe, which replays the result. Install it with
 `pip install tactics` and import it as `tactics`.
@@ -26,25 +26,25 @@ Every stage has a deterministic default, so a run works with no agent, one agent
 ## Agents: the HPCAgent-Bench plugin
 
 [plugin/tactics](plugin/tactics) is an HPCAgent-Bench plugin. Point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at it and
-run the `nestforge` packet; it sets the library input mode itself (`finalize` hands the judge a library). The
-`nestforge` packet exposes the moves phase; scopes, placement and kernel builds run their defaults in
-`get_performance` and `finalize`, on a copy, so a score leaves the moves open. The `nestforge-full` packet (alias
-`nestforge-two-stage`) is structured, then unstructured: the agent settles moves and scopes, placement fixes the
+run the `tactics` packet; it sets the library input mode itself (`finalize` hands the judge a library). The
+`tactics` packet exposes the moves phase; scopes, placement and kernel builds run their defaults in
+`get_performance` and `finalize`, on a copy, so a score leaves the moves open. The `tactics-full` packet (alias
+`tactics-two-stage`) is structured, then unstructured: the agent settles moves and scopes, placement fixes the
 kernels, and the agent then writes and tunes them one at a time.
-`nestforge-subagents` hands each kernel to a `kernel-optimizer` subagent. `nestforge-requests` is `nestforge` with
+`tactics-subagents` hands each kernel to a `kernel-optimizer` subagent. `tactics-requests` is `tactics` with
 `request_transformation`, which records a transformation no move offers ([design](docs/design/transformation-requests.md)).
-`nestforge-llvm` and `nestforge-mlir` are the baselines that choose compiler passes instead of moves: the same program,
+`tactics-llvm` and `tactics-mlir` are the baselines that choose compiler passes instead of moves: the same program,
 entry and library, every kernel built through the agent's `opt -passes=` or `polygeist-opt --pass-pipeline=` pipeline.
-`nestforge-passes` is the pass-move agent: named MLIR, then LLVM, passes applied one at a time, with the loops after
+`tactics-passes` is the pass-move agent: named MLIR, then LLVM, passes applied one at a time, with the loops after
 each move ([design](docs/design/mlir-llvm-agent.md)).
-The skill page ([skills/nestforge](plugin/tactics/skills/nestforge/SKILL.md)) explains the tree and the moves. Each
+The skill page ([skills/tactics](plugin/tactics/skills/tactics/SKILL.md)) explains the tree and the moves. Each
 tool is listed with MCP annotations: reads are read-only, `write_kernel` and `unset_scope` overwrite earlier work.
 
 | Phase | Tools | Packets |
 |---|---|---|
 | structured (stages 1-2) | `get_cpf`, `view_tree`, `list_move_kinds`, `list_moves`, `apply_move`, `run_defaults` | both |
 | any | `get_performance`, `finalize` | both |
-| scopes, kernels, codegen | `set_scope`, `unset_scope`, `list_kernels`, `focus_kernel`, `read_kernel`, `write_kernel`, `tune_kernel` | `nestforge-full` (`nestforge-two-stage`), `nestforge-subagents` |
+| scopes, kernels, codegen | `set_scope`, `unset_scope`, `list_kernels`, `focus_kernel`, `read_kernel`, `write_kernel`, `tune_kernel` | `tactics-full` (`tactics-two-stage`), `tactics-subagents` |
 
 `write_kernel`, `tune_kernel` and `get_performance` answer with `Session.performance()`: the whole program's time and
 correctness, each kernel's device and the bytes moved between memories, and each kernel's time and share. Stages not
@@ -63,6 +63,13 @@ A call stops when its client leaves or after `TOOL_TIMEOUT_S`, and the session k
 repeating the call goes on from there. The route journals every change, and a session that dies is rebuilt from it.
 
 [docs/README.md](docs/README.md) maps the code and the phases, and says how to add a move, a tool, a phase or a packet.
+
+## MCP server
+
+`tactics-mcp KERNEL [--preset S] [--datatype float64] [--gpu]` serves the same tools over MCP (stdio) on one bench
+kernel, for any MCP client. Each tool's input schema is its pydantic model's (`tactics/wire.py`), and its hints
+(read-only, destructive) follow its effect. Inside the bench judge, the plugin serves the same tools as JSON-RPC at
+`POST /tactics/mcp`, with the episode's identity in each call's `_meta`.
 
 ## Quick start
 
@@ -125,7 +132,7 @@ SDFG 'blur_steps'
 Rows carry what they read and write (a state leaves out its own temporaries), and `doalls=<k>` on a closed state;
 `get_work_depth` gives a row's work and depth on request. `expand` opens a state (its doalls as rows) or a doall
 (its statements and body states); `collapse` closes any open row. Labels stay on their rows until a move consumes them.
-The [skill page](plugin/tactics/skills/nestforge/SKILL.md) has the full vocabulary and the moves.
+The [skill page](plugin/tactics/skills/tactics/SKILL.md) has the full vocabulary and the moves.
 
 ## Install and test
 
@@ -150,8 +157,8 @@ pytest -m cloudsc                                                       # every 
 HPCAgent-Bench (`hpcagent-bench`), DaCe extended (`dace-extended`), dace-relayout and FP-Arena come from PyPI, in a
 checkout as in a pip install. `python scripts/bump_deps.py [bench-branch]` points a checkout at the tip of a bench
 branch instead (the nightly bench-tip CI job does this). Tactics is a user plugin of the bench (`plugin/tactics`, through
-`HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the bench never imports it, and the plugin keeps its registered name `nestforge` (packets, optimizers, records). Tactics
-assumes Linux.
+`HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the bench never imports it. The plugin, its packets, optimizers, judge route
+(`/tactics/<tool>`), `TACTICS_*` settings and record file (`tactics.json`) are all named `tactics`. Tactics assumes Linux.
 A pip install of the bench does not ship the KernelBench submodule, so an ML kernel (`conv2d_*`) has no PyTorch
 reference and its outputs go unchecked (`correct: null`). Point `HPCAGENT_BENCH_ML_KERNELBENCH_DIR` at an
 initialized KernelBench checkout to check them.
@@ -173,7 +180,7 @@ plugin/tactics/  the HPCAgent-Bench plugin: tools, judge route, method prompt
 reference_solutions/  one reference-solution script per benchmark, replayed by tactics/replay.py
 ```
 
-More: [the structure tree, NestForge's IR](docs/ir.md), [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md),
+More: [the structure tree, Tactics' IR](docs/ir.md), [Python oracle](docs/oracle.md), [kernel DAG](docs/depends.md),
 [build and runtime linking](docs/build.md), [FP modes and cost models](docs/fp-and-vectorization.md). Contributors
 follow [AGENTS.md](AGENTS.md).
 

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ``inline-library`` move: a library node becomes the maps and tasklets of DaCe's vendor-free expansion, in
 canonical parallel form, so the other moves reach inside it."""
@@ -32,7 +32,7 @@ EXPANSIONS = ("pure", "specialize")
 
 def expansion(node: nodes.LibraryNode) -> str | None:
     """The implementation ``node`` expands with, or ``None`` when every one it has calls a vendor library. A kernel
-    NestForge built (``ExternalCall``) never expands."""
+    Tactics built (``ExternalCall``) never expands."""
     if isinstance(node, ExternalCall):
         return None
     return next((name for name in EXPANSIONS if name in node.implementations), None)
@@ -147,7 +147,7 @@ def set_default_implementations(sdfg: dace.SDFG, targets: Targets) -> None:
 
 
 def selectable(node: object) -> bool:
-    """Whether ``node`` is a library call, not a kernel NestForge built."""
+    """Whether ``node`` is a library call, not a kernel Tactics built."""
     return isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall)
 
 

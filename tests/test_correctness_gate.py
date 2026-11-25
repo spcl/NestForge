@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The difference a measured kernel reports against its oracle: ``arena.diff_stats``, the ``maxdiff`` of a verdict (the
 grade itself is the bench's, ``tests/test_kernel_grading.py``).

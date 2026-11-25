@@ -1,7 +1,7 @@
-# How NestForge is built and how to extend it
+# How Tactics is built and how to extend it
 
 [Overview](../README.md). What each stage decides is in [stages.md](stages.md); the tree the agent reads is in
-[ir.md](ir.md), and what an episode's record holds in [plugin-record.md](plugin-record.md). NestForge's own phases
+[ir.md](ir.md), and what an episode's record holds in [plugin-record.md](plugin-record.md). Tactics' own phases
 are in [phases.md](phases.md), and how a move answers with the subtree it rewrote in
 [subtree-answers.md](subtree-answers.md). This page is the map of the code: the layers, the phases an agent walks through, and where to add a
 move, a tool, a phase or a packet. Features that are designed and not yet built have one page each in
@@ -9,21 +9,21 @@ move, a tool, a phase or a packet. Features that are designed and not yet built 
 
 ## The layers
 
-Calls go down this list. `nestforge` never imports the bench at module level; only `tactics_bench` and the plugin's
+Calls go down this list. `tactics` never imports the bench at module level; only `tactics_bench` and the plugin's
 judge route do.
 
 | Layer | Where | Holds |
 |---|---|---|
-| Agent tools | `plugin/tactics/tools/nestforge.py` | One thin `POST /nestforge/<tool>` per tool. The agent image has no DaCe. |
+| Agent tools | `plugin/tactics/tools/tactics.py` | One thin `POST /tactics/<tool>` per tool. The agent image has no DaCe. |
 | Tool table | `plugin/tactics/wire.py` | Each tool's phase, arguments, description and effect. Pure pydantic, read by both sides. |
-| Judge route | `plugin/tactics/routes/nestforge.py` | One session process per episode and kernel, one call at a time. |
+| Judge route | `plugin/tactics/routes/tactics.py` | One session process per episode and kernel, one call at a time. |
 | Session process | `tactics/server.py` | A `Session` in its own process; `CALLS` maps each tool to a session call and closes tools by state. |
 | Session | `tactics/session.py` | The one API over the stages, used by agents, humans and the reference driver. Owns the SDFG. |
 | Stages | `tactics/stages/` | One module per stage: `canonicalize`, `moves`, `expand`, `scopes`, `placement`, `kernel`, `variants`, `feedback`, `performance`, `finalize`; `layout` (argument layouts) and `vectorize` (one doall's vectorization) serve two move kinds. |
 | IR helpers | `tactics/ir/` | The structure tree ([ir.md](ir.md)): rows and labels (`names`, `introspect`), bodies as Python (`emit_python`) or C (`emit_c`); outlining (`extract`), kernel dependencies (`depends`). |
 | Build | `tactics/build/` | Toolchains, flags, the timing arena, SDFG build settings. |
 | Corpus | `tactics/corpus/` | Bench kernels as DaCe programs, and the Python oracle a kernel is checked against. |
-| Bench columns | `tactics_bench/` | `nestforge_reference`, `nestforge_default` and `nestforge_cpf_nowave` (no LLM: reference moves, the default moves on every kernel, or no moves on the canonical form without wavefronts), and `nestforge_stub` and `nestforge_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all five in the bench's CI, the second on `nestforge-two-stage`. |
+| Bench columns | `tactics_bench/` | `tactics_reference`, `tactics_default` and `tactics_cpf_nowave` (no LLM: reference moves, the default moves on every kernel, or no moves on the canonical form without wavefronts), and `tactics_stub` and `tactics_two_stage` (CI stand-ins for an agent; the second walks every phase). `[ci]` in `plugin.toml` runs all five in the bench's CI, the second on `tactics-two-stage`. |
 
 A session starts from `server.start()`, which canonicalizes the program. Every stage has a default, so a run needs no
 agent. `Session.trial()` copies a session for work that must not stick: `performance` and `finalize` both run on one,
@@ -33,15 +33,15 @@ so reading a time or taking a score never changes the program.
 
 `plugin.toml` lists the phases in order. A packet's `agent` key names the phases the agent works; the rest run their
 `default` when the agent calls `next_phase`. The bench owns the phase gate (a tool of a later phase is refused) and
-walks the order; NestForge owns what each step does to the session.
+walks the order; Tactics owns what each step does to the session.
 
 | Half | Phase | Runs | Session state afterwards |
 |---|---|---|---|
 | structured | `moves` | agent, tools `apply_move`, `run_defaults`, ... | the program, reshaped |
-| structured | `scopes` | agent in `nestforge-full`, else default | some kernels; moves close at the first one |
+| structured | `scopes` | agent in `tactics-full`, else default | some kernels; moves close at the first one |
 | fixed point | `placement` | always default | what no scope covers gets its default scope; kernels are fixed |
-| unstructured | `kernels` | agent in `nestforge-full`, else nothing | each kernel's source, one kernel in focus at a time |
-| unstructured | `codegen` | agent in `nestforge-full`, else nothing | each kernel's compiler configuration |
+| unstructured | `kernels` | agent in `tactics-full`, else nothing | each kernel's source, one kernel in focus at a time |
+| unstructured | `codegen` | agent in `tactics-full`, else nothing | each kernel's compiler configuration |
 | | `round` | always default | back to the program as the moves left it |
 
 Four rules follow, and `tactics/server.py` enforces all but the last:
@@ -60,12 +60,12 @@ The packets:
 
 | Packet | Agent works | For |
 |---|---|---|
-| `nestforge` | `moves` | Structured only. The agent writes no code. |
-| `nestforge-full`, also `nestforge-two-stage` | `moves`, `scopes`, `kernels`, `codegen` | Structured, then unstructured: one agent takes the kernels one at a time. |
-| `nestforge-subagents` | the same | As `nestforge-full`, with one `kernel-optimizer` subagent per kernel. Each has its own context. |
-| `nestforge-requests` | `moves` | As `nestforge`, and the agent may ask for a transformation no move offers (`request_transformation`). |
-| `nestforge-llvm`, `nestforge-mlir` | none | Baselines: no move, no written code; every kernel built through the agent's LLVM (`set_llvm_passes`) or MLIR (`set_mlir_passes`) pass pipeline, from the canonical form with every move family off. |
-| `nestforge-passes` | none | Baseline: named MLIR, then LLVM, pass moves applied one at a time (`list_pass_moves`, `apply_pass_move`, `view_ir`, `advance_pass_phase`), CPU kernels; rollback takes a move back. |
+| `tactics` | `moves` | Structured only. The agent writes no code. |
+| `tactics-full`, also `tactics-two-stage` | `moves`, `scopes`, `kernels`, `codegen` | Structured, then unstructured: one agent takes the kernels one at a time. |
+| `tactics-subagents` | the same | As `tactics-full`, with one `kernel-optimizer` subagent per kernel. Each has its own context. |
+| `tactics-requests` | `moves` | As `tactics`, and the agent may ask for a transformation no move offers (`request_transformation`). |
+| `tactics-llvm`, `tactics-mlir` | none | Baselines: no move, no written code; every kernel built through the agent's LLVM (`set_llvm_passes`) or MLIR (`set_mlir_passes`) pass pipeline, from the canonical form with every move family off. |
+| `tactics-passes` | none | Baseline: named MLIR, then LLVM, pass moves applied one at a time (`list_pass_moves`, `apply_pass_move`, `view_ir`, `advance_pass_phase`), CPU kernels; rollback takes a move back. |
 
 The subagent file lists no `tools` on purpose: the harnesses name tools differently, and the closing rules hold for
 every caller of the route. The agent focuses each kernel before it starts that kernel's subagent; a

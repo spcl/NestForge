@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session: the one API over the seven stages, shared by the deterministic driver, humans and agents.
 
@@ -808,6 +808,7 @@ class Checkpoint:
     prepared: dict[str, Prepared]
     measured: Measured | None
     gpu_choices: dict[str, dict[str, GpuChoice]]
+    device_moves: dict[str, tuple[Move, ...]]
     kernel_modes: frozenset[tuple[str, str]]
     pipeline: tuple[str, str] | None
     persistent: frozenset[tuple[str, str]]
@@ -851,6 +852,7 @@ class Session:
         "oracles_out_of_time",
         "measured",
         "gpu_choices",
+        "device_moves",
         "kernel_modes",
         "pipeline",
         "persistent",
@@ -968,10 +970,12 @@ class Session:
         self.measured: Measured | None = None
         #: Per GPU kernel, what set-schedule-gpu chose for its doalls, by label; set again after every placement.
         self.gpu_choices: dict[str, dict[str, GpuChoice]] = {}
+        #: Per GPU kernel, the device moves made in its placed body, in order; made again after every placement.
+        self.device_moves: dict[str, tuple[Move, ...]] = {}
         #: ``(kernel, mode)``: the floating-point mode a kernel is built in (``set-fp-mode``); a kernel not here is
         #: built in the mode its sweep picks.
         self.kernel_modes: frozenset[tuple[str, str]] = frozenset()
-        #: The agent's own pass pipeline every CPU kernel is built through (``ir``, pipeline); ``None``: NestForge's.
+        #: The agent's own pass pipeline every CPU kernel is built through (``ir``, pipeline); ``None``: Tactics'.
         self.pipeline: tuple[str, str] | None = None
         #: ``(kernel, block)``: the blocks of each kernel's body that run as its one persistent kernel.
         self.persistent: frozenset[tuple[str, str]] = frozenset()
@@ -1030,6 +1034,7 @@ class Session:
             dict(self.prepared),
             self.measured,
             {name: dict(held) for name, held in self.gpu_choices.items()},
+            dict(self.device_moves),
             self.kernel_modes,
             self.pipeline,
             self.persistent,
@@ -1055,6 +1060,7 @@ class Session:
         self.sources, self.builds, self.prepared = saved.sources, saved.builds, saved.prepared
         self.measured = saved.measured
         self.gpu_choices = saved.gpu_choices
+        self.device_moves = saved.device_moves
         self.kernel_modes = saved.kernel_modes
         self.pipeline = saved.pipeline
         self.persistent = saved.persistent
@@ -1203,6 +1209,14 @@ class Session:
             reason = Refused(f"no tree row is labeled {', '.join(missing)}{why}.", Refusal.UNKNOWN_LABEL)
             return illegal(kind, names, reason, MoveStatus.NOT_FOUND)
         return [rows[name] for name in names]
+
+    def move_rows(self, kind: str, scope: str | None) -> dict[str, Row]:
+        """The rows the labels of a ``kind`` move name: the program's, or the body of the kernel ``scope``, as placed
+        for a device move."""
+        if scope is None:
+            return self.row_index()
+        structured, device = self.move_programs(scope)
+        return tree_rows(device if kind in DEVICE_KINDS else structured)
 
     def move_programs(self, scope: str | None) -> tuple[dace.SDFG, dace.SDFG]:
         """``(what the structured moves rewrite, what the device moves rewrite)``: the program, or the body of the
@@ -1688,19 +1702,13 @@ class Session:
         self.gpu_choices = {**self.gpu_choices, scope: kept}
 
     def staging_refusal(self, kind: str, scope: str) -> str | None:
-        """Why ``kind`` would undo or clash with what the GPU kernel ``scope`` holds, or ``None``. A placement drops
-        ``stage-loads-shared``, and staging adds a thread-block map and a block of its own."""
-        # TODO(owner): a device move that survives a new placement would lift both refusals (schedule-moves.md).
-        staged = [
-            ext.name
-            for ext in external_calls(self.sdfg)
-            if ext.standalone_sdfg is not None
-            and any(desc.storage == dace.StorageType.GPU_Shared for desc in ext.standalone_sdfg.arrays.values())
-        ]
+        """Why ``kind`` would clash with what the GPU kernel ``scope`` holds, or ``None``: staging sets a thread block
+        of its own and adds a thread-block map, and DaCe takes a kernel's block from one place only."""
+        staged = [move.kind for move in self.device_moves.get(scope, ())]
         if kind == SET_SCHEDULE_GPU and staged:
             return Refused(
-                f"{', '.join(staged)} staged loads through shared memory, which placing {scope} again drops; set the GPU "
-                "schedules first and stage after, or roll the staging back.",
+                f"{scope} stages loads through shared memory ({', '.join(staged)}), which sets a thread block of its "
+                "own; take one or the other (roll the staging back to set a GPU schedule).",
                 Refusal.ARGUMENT,
             )
         if kind in DEVICE_KINDS and any(
@@ -2145,7 +2153,11 @@ class Session:
                 )
         if not isinstance(plan, Rewrite):
             return illegal(kind, names, plan)
-        return self.committed(kind, names, plan, scope, target)
+        done = self.committed(kind, names, plan, scope, target)
+        if kind in DEVICE_KINDS and scope is not None and done.status is MoveStatus.APPLIED:
+            made = Move(kind=kind, labels=names, block=tuple(tile_sizes), depth=depth, isa=isa, scope=scope)
+            self.device_moves = {**self.device_moves, scope: (*self.device_moves.get(scope, ()), made)}
+        return done
 
     def committed(
         self, kind: str, names: tuple[str, ...], plan: Rewrite, scope: str | None, target: dace.SDFG
@@ -2379,7 +2391,7 @@ class Session:
             self.sdfg, self.applied = sdfg, applied
             self.unscoped, self.unplaced, self.focus = None, None, None
             # the kernels are gone; a kernel's name comes from its row's label, which is back
-            self.gpu_choices = {}
+            self.gpu_choices, self.device_moves = {}, {}
             self.bump()
         return self.describe()
 
@@ -2488,6 +2500,7 @@ class Session:
         inline_top_level_nsdfgs(self.sdfg)
         # its tuning goes with the kernel: a later kernel may take its name
         self.gpu_choices = {kernel: held for kernel, held in self.gpu_choices.items() if kernel != name}
+        self.device_moves = {kernel: held for kernel, held in self.device_moves.items() if kernel != name}
         self.bump()
         done = MoveResult(status=MoveStatus.APPLIED, kind="unset-scope", labels=(name,), reason=name)
         self.applied.append(done)
@@ -2584,6 +2597,7 @@ class Session:
     ) -> PlaceResult:
         """Bump the program after a placement; a build stays linked while its kernel's ``interfaces`` entry holds."""
         set_gpu_choices(self.sdfg, self.gpu_choices)
+        self.restage()
         self.bump()
         # a build stays linked while placement leaves its kernel's device and argument storage as they were
         placed = kernel_interfaces(self.sdfg)
@@ -2600,6 +2614,29 @@ class Session:
         self.sdfg = copy.deepcopy(self.unplaced)
         lower(self.sdfg, devices)
         set_gpu_choices(self.sdfg, self.gpu_choices)
+        self.restage()
+
+    def restage(self) -> None:
+        """Make each GPU kernel's device moves again on its placed body, which a placement lowers afresh; a move the
+        body no longer takes (its kernel left the GPU, or a move inside it changed its rows) is dropped."""
+        devices = self.devices()
+        kept: dict[str, tuple[Move, ...]] = {}
+        for scope, moves in self.device_moves.items():
+            if devices.get(scope) != "gpu":
+                continue
+            device = self.move_programs(scope)[1]
+            for move in moves:
+                rows = self.named_rows(move.kind, move.labels, tree_rows(device))
+                if isinstance(rows, MoveResult):
+                    continue
+                plan = plan_move(
+                    move.kind, rows, move.block, isa=move.isa, target=self.targets.canon_target, depth=move.depth
+                )
+                if isinstance(plan, Rewrite):
+                    plan.commit()
+                    normalize_labels(device, self.namer)
+                    kept[scope] = (*kept.get(scope, ()), move)
+        self.device_moves = kept
 
     def devices(self) -> dict[str, str]:
         """Every kernel's device."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Loop-level-reasoning kernels with harder control flow and reductions, emitted, run and checked against hand-written
 references: a ``break`` early exit, and a size-1 buffer read as ``x[0]`` whose WCR copy accumulates.

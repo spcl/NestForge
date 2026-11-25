@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """doall-fusion of two row recurrences after interchange-for-doall (#27): the first map reads the array it writes other
 than point-wise, so MapFusionVertical fuses in place, and the fused program still computes the recurrences."""

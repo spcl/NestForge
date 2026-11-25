@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Container-level kernel dependencies: which producers reach each ``ExternalCall`` argument, on programs lowered
 by stage 3 and on hand-built SDFGs where the frontend cannot express the case. Structural only; nothing compiles."""

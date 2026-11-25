@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The gate of an authored move (``tactics/stages/gate.py``): on its cluster's examples, a move that does what the
 requests asked passes, a move that computes something else is caught on the numbers, and a move that never matches

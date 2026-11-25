@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """What one iteration of a leaf doall computes, as C: the tree's second spelling of a body (the first is Python,
 :func:`~tactics.ir.introspect.body_lines`). A Python tasklet is spelled by DaCe's own C++ unparser; a C++ tasklet

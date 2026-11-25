@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 4: the device of every kernel, the host/device copies DaCe's offloading inserts for it, and the
 transfers the kernel DAG implies. Default: parallel kernels on the GPU when it is a target, the rest on the CPU.

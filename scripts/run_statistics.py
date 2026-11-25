@@ -1,10 +1,10 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""One row per NestForge episode of a results DB, from the plugin record its last graded submission kept
+"""One row per Tactics episode of a results DB, from the plugin record its last graded submission kept
 (docs/plugin-record.md) and the episode's token columns: calls, refusals by class, attempts that failed
 to build or were wrong, and the tokens spent before and after the first ``write_kernel``.
 
-    python scripts/run_statistics.py results.db --setup nestforge- --out stats.csv
+    python scripts/run_statistics.py results.db --setup tactics- --out stats.csv
 """
 
 import argparse
@@ -17,7 +17,7 @@ from hpcagent_bench.harness import results_db
 from hpcagent_bench.stats import plugin_records
 
 #: The plugin whose records this script reads, and the record schema it understands.
-PLUGIN = "nestforge"
+PLUGIN = "tactics"
 #: The record versions this script reads; version 2 changed what labels a journal names, not the shape.
 SCHEMAS = frozenset({1, 2})
 #: Every refusal class (``tactics.records.Refusal``), spelled as the record stores it.
@@ -46,6 +46,20 @@ def episode_tokens(db: pathlib.Path) -> dict[tuple[str, str], dict[str, int]]:
         return {(str(row[0]), str(row[1])): dict(zip(TOKEN_COLUMNS, map(int, row[2:]))) for row in conn.execute(query)}
 
 
+def forced_moves_kept(calls: list[dict[str, Any]]) -> list[int]:
+    """The indices of the forced moves no later ``rollback`` took back; each rollback takes back the last applied change."""
+    kept: list[tuple[int, bool]] = []
+    for call in calls:
+        if call["status"] != "applied":
+            continue
+        if call.get("kind") == "rollback":
+            if kept:
+                kept.pop()
+        else:
+            kept.append((call["index"], bool(call.get("forced", False))))  # records before the field have none
+    return [index for index, forced in kept if forced]
+
+
 def row_of(data: dict[str, Any]) -> dict[str, Any]:
     """The counts of one record."""
     calls: list[dict[str, Any]] = data["calls"]
@@ -57,8 +71,7 @@ def row_of(data: dict[str, Any]) -> dict[str, Any]:
     first = data["first_write_kernel"]
     before = next((call["tokens"] for call in calls if call["index"] == first), None) if first is not None else None
     last = tokens[-1] if tokens else None
-    # records before the field have none; TODO(owner): a forced move later rolled back still counts here
-    forced = [call["index"] for call in calls if call.get("forced", False)]
+    forced = forced_moves_kept(calls)
     return {
         "calls": len(calls),
         "applied": applied,
@@ -92,7 +105,7 @@ def rows(db: pathlib.Path, setup_prefix: str) -> list[dict[str, Any]]:
                 f"{episode}: record schema {kept.record.schema_version}, this script reads {sorted(SCHEMAS)}"
             )
         data = kept.record.data
-        assert isinstance(data, dict), "a NestForge record is a JSON object"
+        assert isinstance(data, dict), "a Tactics record is a JSON object"
         spent = tokens.get((setup, episode), dict.fromkeys(TOKEN_COLUMNS, 0))
         out.append({"setup": setup, "episode": episode, "kernel": kernel, **row_of(data), **spent})
     return out

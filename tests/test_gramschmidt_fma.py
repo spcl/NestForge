@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """gramschmidt shows when an FP mode matters (docs/fp-and-vectorization.md).
 
@@ -130,18 +130,13 @@ def sweep(conditioning: str, tmp_path: Path) -> dict[str, float]:
     return {m: relerr(outs[m], ref) for m in FP_MODES}
 
 
-def test_fma_contraction_alone_stays_at_machine_epsilon(tmp_path: Path) -> None:
+def test_fma_contraction_stays_at_machine_epsilon_and_fastmath_is_stable_when_well_conditioned(tmp_path: Path) -> None:
     """FMA contraction (``-ffp-contract=fast``, no reassociation) rounds a multiply-add once instead of twice, so it
     may move the last bit but stays within a few ulps of ieee-strict -- so the divergence below is due to
     reassociation, not FMA. Refines "FMA is the danger" to "reassociation is the danger"."""
     err = sweep("well", tmp_path)
     assert err["contract-fast"] <= CONTRACTION_ULPS * np.finfo(np.float64).eps
-
-
-def test_fastmath_is_stable_when_well_conditioned(tmp_path: Path) -> None:
-    """Well-conditioned: reassociation only shuffles O(n*eps) benign noise (kappa~1) -- stable."""
-    err = sweep("well", tmp_path)
-    assert err["fast-math"] < 1e-12  # ~machine epsilon, not exploding
+    assert err["fast-math"] < 1e-12, "well-conditioned: reassociation only shuffles O(n*eps) noise"
 
 
 def test_fastmath_diverges_when_ill_conditioned(tmp_path: Path) -> None:

@@ -1,4 +1,4 @@
-# Phases owned by NestForge
+# Phases owned by Tactics
 
 [Docs](README.md) · [Stages](stages.md)
 
@@ -6,8 +6,8 @@ Status: built (2026-11-18), owner's spec of 2026-11-18 (items P1 and P2 of `note
 
 ## Goal
 
-The agent works on a program in phases. NestForge owns them: nothing of NestForge lives in HPCAgent-Bench, whose
-generic `[phases]` feature NestForge no longer uses. The canonical parallel form runs once when the session starts;
+The agent works on a program in phases. Tactics owns them: nothing of Tactics lives in HPCAgent-Bench, whose
+generic `[phases]` feature Tactics no longer uses. The canonical parallel form runs once when the session starts;
 then:
 
 | Phase | What the agent does | Default when the agent does not run it |
@@ -53,7 +53,7 @@ The names differ from the bench's own `next_phase` tool, which the agent's tool 
 - The session keeps the phase and, for every phase the agent left, the program as it left it (`Session.saved()`,
   the checkpoint `rollback` uses), taken before the defaults of the way out run. `undo_phase` restores it. Rollback
   takes back changes of the current phase only: leaving or undoing a phase clears its history.
-- `NESTFORGE_AGENT_PHASES` in a packet's `env` names the phases the agent runs (unset: all); every call carries it,
+- `TACTICS_AGENT_PHASES` in a packet's `env` names the phases the agent runs (unset: all); every call carries it,
   and the route fixes it at the episode's first call, as it does for the switched-off move families.
 - The server refuses a tool outside its phases (`server.TOOL_PHASES`, the same table `wire.py` labels each tool with):
   moves on the program in `structured`, moves with a `scope` in `scoped`, placement and schedule kinds in `scopes`.

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Moves inside a scope: the stage-2 menu rewrites one kernel's body, addressed by the kernel's name and the body's
 labels, and a GPU kernel's body can stage its reads through shared memory. Neither touches the program around the
@@ -122,6 +122,59 @@ def test_staging_reused_loads_gives_only_that_gpu_kernel_a_shared_tile(tmp_path:
     session.sdfg.validate()
 
 
+def staged_first(tmp_path: Path) -> tuple[Session, str, str]:
+    session, first, second = placed_on_gpu(tmp_path)
+    labels = only_move(session, "stage-loads-shared", first)
+    assert session.apply_move("stage-loads-shared", labels, block=(64,), scope=first).status is MoveStatus.APPLIED
+    return session, first, second
+
+
+def shared_tiles(session: Session, name: str) -> list[str]:
+    body = session.kernel(name).standalone_sdfg
+    return [name for name, desc in body.arrays.items() if desc.storage == dace.StorageType.GPU_Shared]
+
+
+# Reproducer: a later placement dropped stage-loads-shared and other device moves (0.1.1)
+def test_staging_survives_placing_the_kernels_again(tmp_path: Path) -> None:
+    session, first, second = staged_first(tmp_path)
+
+    session.place({first: "gpu", second: "cpu"})
+    session.insert_copies()
+
+    assert len(shared_tiles(session, first)) == 1, "the placement lowers the body afresh; the staging is made again"
+    session.sdfg.validate()
+
+
+# Reproducer: one staged kernel blocked GPU schedules on every kernel (0.1.1)
+def test_a_gpu_schedule_on_another_kernel_is_allowed_while_one_kernel_stages(tmp_path: Path) -> None:
+    session, first, second = staged_first(tmp_path)
+    (listed,) = session.list_moves("set-schedule-gpu", scope=second)
+
+    done = session.apply_move("set-schedule-gpu", listed.labels, scope=second, block=[128])
+
+    assert done.status is MoveStatus.APPLIED, done
+    assert len(shared_tiles(session, first)) == 1
+
+
+def test_a_gpu_schedule_on_the_staged_kernel_is_refused(tmp_path: Path) -> None:
+    session, first, _ = staged_first(tmp_path)
+    label = session.list_moves("set-schedule-gpu", scope=first)[0].labels[0]
+
+    done = session.apply_move("set-schedule-gpu", [label], scope=first, block=[128])
+
+    assert (done.status, done.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), done
+    assert "take one or the other" in done.reason
+
+
+def test_rolling_the_staging_back_takes_it_out_of_later_placements(tmp_path: Path) -> None:
+    session, first, second = staged_first(tmp_path)
+
+    session.apply_move("rollback", [])
+    session.place({first: "gpu", second: "gpu"})
+
+    assert shared_tiles(session, first) == []
+
+
 def test_staging_without_a_thread_block_is_refused_and_says_what_to_pass(tmp_path: Path) -> None:
     session, first, _ = placed_on_gpu(tmp_path)
     before = session.kernel(first).standalone_sdfg.hash_sdfg()
@@ -194,6 +247,17 @@ def test_a_cpu_schedule_reaches_the_pragma_of_that_doall_and_of_no_other(tmp_pat
     # the generated pragma is the product of the move
     assert generated_cpu_code(session, first).count("schedule(dynamic, 16) num_threads(4)") == 1
     assert "schedule(" not in generated_cpu_code(session, second)
+
+
+def test_a_cpu_schedule_reaches_the_pragma_of_the_built_kernel(tmp_path: Path) -> None:
+    session, first, _ = placed_on_cpu(tmp_path)
+    (listed,) = session.list_moves("set-schedule-cpu", scope=first)
+    session.apply_move("set-schedule-cpu", listed.labels, scope=first, schedule="dynamic", chunk=16, threads=4)
+
+    built = session.default_kernel(first).unit.read_text()
+
+    # the kernel build runs DaCe's CPU specialization, which may hand the team to another map
+    assert built.count("schedule(dynamic, 16) num_threads(4)") == 1, built
 
 
 def test_a_cpu_schedule_needs_a_scope_and_a_cpu_kernel(tmp_path: Path) -> None:
@@ -355,6 +419,7 @@ def test_tma_is_refused_on_a_gpu_older_than_hopper_and_says_why(tmp_path: Path) 
     assert done.status is not MoveStatus.APPLIED and "compute capability 9.0" in done.reason
 
 
+# Reproducer: short GPU block left a dimension without a size (#112)
 def test_a_block_shorter_than_the_doalls_rank_is_padded_with_ones_as_cuda_reads_dim3(tmp_path: Path) -> None:
     """spcl/tactics#112: ``block=[256]`` on a 2-D kernel doall is ``[256, 1]``, which DaCe's GPU tiling reads per
     dimension; a block of one size per dimension left the leading dimension without a size."""

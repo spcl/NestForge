@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The inverses of the hoisting moves: an if, or the statements that compute a temporary, move into the loop or
 doalls that use them. Built on DaCe's ``MoveIfIntoMap`` helpers; DaCe has no pass for either direction.

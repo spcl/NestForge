@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The kernel DAG: for every ``ExternalCall`` argument, the producers whose value can reach it (the program, a
 kernel output, or a host state) and the loops it is carried around. Whole containers only: a read reads all of

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The emitted Python oracle computes what DaCe's compiled SDFG computes, one C or DaCe semantic per tiny SDFG:
 write-conflict resolutions, reductions, offsets, C arithmetic, local dtypes, library subsets and nested scratch."""
@@ -245,19 +245,3 @@ def test_a_symbol_a_later_loop_derives_from_an_earlier_loop_is_typed_from_it() -
         loops.append(loop)
 
     assert blocks_defined_symbol_dtypes(sdfg, loops) == {"s": dace.float64, "u": dace.float64}
-
-
-if __name__ == "__main__":
-    test_a_dynamic_wcr_write_the_tasklet_skips_combines_nothing()
-    test_a_ranged_wcr_write_combines_each_element_once()
-    test_a_reduce_without_identity_accumulates_into_its_output()
-    test_a_library_subset_spelled_with_min_is_python()
-    test_an_offset_array_is_indexed_from_its_offset()
-    test_tasklet_modulo_truncates_as_in_c()
-    test_tasklet_integer_division_truncates_as_in_c()
-    test_a_transient_scalar_holds_its_own_dtype()
-    test_round_rounds_halves_away_from_zero_as_std_round()
-    test_iround_rounds_halves_away_from_zero_to_an_integer()
-    test_a_nested_scratch_never_shares_a_kernel_argument_of_its_name()
-    test_a_nest_that_repeats_its_max_wcr_inside_is_inlined_with_the_bound_name()
-    test_a_symbol_a_later_loop_derives_from_an_earlier_loop_is_typed_from_it()

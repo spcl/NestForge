@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """preset_sizes: a preset's integer symbols, plus the integers a manifest fixes for every preset, which are symbols
 of the program too and are bound nowhere else."""
@@ -39,6 +39,7 @@ def test_an_integer_the_initializer_returns_binds_a_symbol_of_the_program() -> N
     assert symbol_inputs(sdfg, inputs) == {"k": 3, "N": 4}
 
 
+# Reproducer: preset nnz copied part of A_data to the GPU (#94, bicgstab)
 @pytest.mark.integration
 def test_the_datas_count_wins_over_the_presets(tmp_path: Path) -> None:
     """bicgstab's preset names a nominal ``nnz``; the matrix the data holds has another, and the arrays are that size.

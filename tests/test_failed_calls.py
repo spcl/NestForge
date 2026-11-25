@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A call that fails leaves the session as it was: the program, the row labels and the record of applied moves."""
 
@@ -182,25 +182,3 @@ def test_a_refused_scope_leaves_the_program_a_new_round_returns_to() -> None:
 
     assert refused.run_defaults("round") == repeated.run_defaults("round")
     assert refused.applied == repeated.applied
-
-
-if __name__ == "__main__":
-    import pathlib
-    import tempfile
-
-    with pytest.MonkeyPatch.context() as patch:
-        for kind, sizes in (("tile-for", (8,)), ("tile-doall", (8,))):
-            test_a_move_that_fails_after_its_rewrite_is_undone(pathlib.Path(tempfile.mkdtemp()), patch, kind, sizes)
-        test_default_scopes_that_fail_partway_leave_no_half_outlined_nest(pathlib.Path(tempfile.mkdtemp()), patch)
-    for stage in ("moves", "finish"):
-        with pytest.MonkeyPatch.context() as patch:
-            test_a_default_stage_that_fails_is_undone(pathlib.Path(tempfile.mkdtemp()), patch, stage)
-    with pytest.MonkeyPatch.context() as patch:
-        test_a_kernel_whose_program_cannot_be_measured_is_undone_and_says_so(pathlib.Path(tempfile.mkdtemp()), patch)
-    with pytest.MonkeyPatch.context() as patch:
-        test_a_move_that_crashes_is_named_rolled_back_and_the_next_move_applies(pathlib.Path(tempfile.mkdtemp()), patch)
-    with pytest.MonkeyPatch.context() as patch:
-        test_a_failed_read_claims_nothing_about_the_program(pathlib.Path(tempfile.mkdtemp()), patch)
-    test_a_call_that_succeeds_keeps_its_change(pathlib.Path(tempfile.mkdtemp()))
-    test_every_timed_change_is_guarded()
-    test_a_refused_scope_leaves_the_program_a_new_round_returns_to()

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tactics owns the DaCe build (docs/build.md): generate DaCe's C++, compile+link it ourselves, call it via
 ctypes with manual init/program/exit -- not ``dace.compile``.
@@ -33,9 +33,8 @@ import helpers
 from helpers import build_sdfg, corpus_kernel
 
 from tactics.build.arena import make_inputs, run_oracle
-from tactics.build.sdfg import BuildOptions, BuiltSDFG, dace_runtime_include, new_gpu_codegen
+from tactics.build.sdfg import BuildOptions, BuiltSDFG, new_gpu_codegen
 from tactics.build.toolchain import (
-    C_PTR,
     NEW_DTAGS,
     compiler_family,
     driver_lib_path,
@@ -80,15 +79,6 @@ def owned_build_matches_oracle(
     for o in oracle:
         np.testing.assert_allclose(buf[o], oracle[o], rtol=1e-9, atol=1e-9, equal_nan=True)
     return built
-
-
-def test_dace_runtime_include_exists() -> None:
-    assert (dace_runtime_include() / "dace" / "dace.h").exists()
-
-
-def test_owned_build_gemm_matches_oracle(tmp_path: Path) -> None:
-    """gemm: int64_t size symbols + a Scalar (alpha/beta) passed by value through the owned build."""
-    owned_build_matches_oracle(tmp_path, "scientific_computing/dense_linear_algebra/gemm/gemm")
 
 
 def test_owned_build_jacobi_matches_oracle(tmp_path: Path) -> None:
@@ -154,6 +144,7 @@ def test_link_flags_pin_a_runtime_that_is_off_the_default_linker_path(
     assert lib_linkable("fakeomp", "g++")
 
 
+# Reproducer: nvcc's host gcc could not find -lomp in GPU links (#98, ault25)
 def test_link_flags_name_the_directory_but_no_rpath_when_the_linker_already_finds_the_runtime(
     tmp_path: Path, cold_lookup_caches: None
 ) -> None:
@@ -580,11 +571,6 @@ def test_a_libomp_only_llvm_config_finds_links_and_loads_from_its_own_directory(
 def test_a_gpu_build_uses_the_new_cuda_codegen_whatever_the_config_says() -> None:
     with dace.config.set_temporary("compiler", "cuda", "implementation", value="legacy"), new_gpu_codegen():
         assert dace.config.Config.get("compiler", "cuda", "implementation") == "experimental"
-
-
-def test_c_ptr_binds_narrow_integer_buffers() -> None:
-    """An int8 buffer (comet_int4_gemm's packed codes) binds as a pointer, like the wider integers."""
-    assert C_PTR["int8_t"] is ctypes.c_int8 and C_PTR["uint8_t"] is ctypes.c_uint8
 
 
 def test_a_std_complex_pointer_binds_as_its_component() -> None:

@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""HPCAgent-Bench imports NestForge, so importing NestForge must never load HPCAgent-Bench."""
+"""HPCAgent-Bench imports Tactics, so importing Tactics must never load HPCAgent-Bench."""
 
 import subprocess
 import sys
@@ -8,8 +8,8 @@ import sys
 from tactics.paths import REPO_ROOT
 
 
-def test_importing_nestforge_never_loads_hpcagent_bench() -> None:
-    """HPCAgent-Bench drives NestForge, so a top-level import the other way would close an import cycle."""
+def test_importing_tactics_never_loads_hpcagent_bench() -> None:
+    """HPCAgent-Bench drives Tactics, so a top-level import the other way would close an import cycle."""
     script = (
         "import importlib, pkgutil, sys\n"
         "import tactics\n"
@@ -21,4 +21,4 @@ def test_importing_nestforge_never_loads_hpcagent_bench() -> None:
     result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, cwd=REPO_ROOT)
     assert result.returncode == 0, result.stderr
     leaked = [name for name in result.stdout.strip().split(",") if name]
-    assert not leaked, f"importing nestforge modules loaded: {leaked}"
+    assert not leaked, f"importing tactics modules loaded: {leaked}"

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``lib-before`` / ``lib-after`` / ``lib-into``: a library call whose memlets are its whole effect (a ``lib_copy``, a
 reduce, a BLAS call), or a host ``Sync`` whose effect is the device work it waits for, leaves its state for a state of

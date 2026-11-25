@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Lowering a nest to an ``ExternalCall`` and running it through the ``DaceReference`` expansion. The linked-library
 expansion is covered by ``test_variants_stage.py``."""

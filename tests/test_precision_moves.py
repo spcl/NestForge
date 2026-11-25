@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ``precision`` family: ``set-fp-mode`` fixes the floating-point flags of one kernel's build, and
 ``change-precision`` stores an internal array in another floating-point type. Both are undone by ``rollback``."""

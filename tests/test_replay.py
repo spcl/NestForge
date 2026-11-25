@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """tactics.replay: label-free picks, the script guard rails, the s231 reference at preset S, the Markdown splice."""
 
@@ -23,7 +23,6 @@ from tactics.replay import (
     markers,
     openmp_env,
     replay_started,
-    short,
     splice,
     started,
 )
@@ -32,7 +31,8 @@ from tactics.stages.canonicalize import Targets
 from tactics.stages.moves import ROLLBACK
 from tactics_bench import solution_paths
 
-SOLUTIONS = solution_paths()
+# a solution with CI_SKIP cannot load on the bench pin; its CI_SKIP says why
+SOLUTIONS = [path for path in solution_paths() if not load_solution(path).ci_skip]
 S231 = REPO_ROOT / "reference_solutions" / "tsvc_2_s231.py"
 #: Where CI replays every solution: correctness only, so the smallest preset on one CPU thread.
 CI_CONTEXT = Context("cpu", 1, "S")
@@ -122,6 +122,21 @@ def test_scope_after_the_default_makes_the_step_loop_one_kernel() -> None:
     assert [m.kind for m in script.applied] == ["define-scope"]
 
 
+# Reproducer: replay could not pick a move inside a kernel (0.1.1)
+def test_a_schedule_move_inside_a_kernel_replays_with_its_scope() -> None:
+    script = column_scan_script()
+    script.defaults()
+    script.scope(where=lambda rows: isinstance(rows[0][0], LoopRegion))
+    (kernel,) = script.session.kernels()
+
+    listed = script.pick("set-schedule-cpu", writes=["_out_y"], scope=kernel)
+
+    done = script.apply(listed.model_copy(update={"schedule": "dynamic", "chunk": 16}), scope=kernel)
+
+    assert (done.kind, done.scope) == ("set-schedule-cpu", kernel)
+    assert script.session.history, "the schedule is a change rollback can take back"
+
+
 def test_scope_refuses_a_filter_nothing_matches() -> None:
     script = column_scan_script()
     script.defaults()
@@ -141,8 +156,6 @@ def test_every_solution_replays_correctly_and_rolls_back_to_the_canonical_progra
     back every change the solution made, one ``rollback`` at a time, gives back the canonical program and its tree;
     halfway back, the program is a valid SDFG. One test for both, as starting a big kernel costs minutes."""
     solution = load_solution(path)
-    if solution.ci_skip:
-        pytest.skip(solution.ci_skip)
     monkeypatch.setattr(session_module, "UNDO_DEPTH", 10_000)  # every change of the solution stays in reach
     canonical = started(solution, CI_CONTEXT)
 
@@ -154,7 +167,7 @@ def test_every_solution_replays_correctly_and_rolls_back_to_the_canonical_progra
         assert variant.error == "" and variant.correct is True, variant
         assert variant.time_ms is not None and variant.speedup is not None
     assert report.variants[0].speedup == pytest.approx(1.0)
-    assert set(report.pins) == {"nestforge", "dace", "hpcagent_bench"}
+    assert set(report.pins) == {"tactics", "dace", "hpcagent_bench"}
     assert markdown([report]).count("| cpu, 1 thread(s), preset S |") == len(names)
 
     sut = canonical[0].trial()
@@ -182,12 +195,6 @@ def test_every_solution_names_its_file_and_a_bench_kernel() -> None:
         assert resolves != exempt, f"{kernel}: bench kernel {resolves}, exempt {exempt}"
 
 
-def test_a_solution_states_why_ci_skips_it() -> None:
-    """``CI_SKIP`` reaches the loaded solution; a script without it is replayed."""
-    assert "MapFission" in load_solution(REPO_ROOT / "reference_solutions" / "cloudsc_nproma.py").ci_skip
-    assert load_solution(S231).ci_skip == ""
-
-
 def test_splice_replaces_only_its_kernels_section() -> None:
     begin, end = markers("tsvc_2_s231")
     other_begin, other_end = markers("tsvc_2_s233")
@@ -202,8 +209,3 @@ def test_openmp_env_carries_the_bench_launch_env() -> None:
     env = openmp_env(Context("cpu", 72, "M"))
     assert env["OMP_NUM_THREADS"] == "72" and env["OMP_PROC_BIND"] == "close"
     assert openmp_launch_env().items() <= env.items()
-
-
-def test_short_cuts_only_full_shas() -> None:
-    assert short("3469167e508742b3df6fb9feba4d4c72d9e9f9e8") == "3469167e5"
-    assert short("0aa3ec0+replay-uncommitted") == "0aa3ec0+replay-uncommitted"

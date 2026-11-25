@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Where a GPU kernel finds its device runtime, as strings and with a stand-in nvcc, so without a GPU toolkit: the
 ``-L`` directory holding the unversioned ``lib<runtime>.so``, found again at load time through a DT_RUNPATH."""
@@ -50,14 +50,3 @@ def test_a_gpu_kernel_links_its_device_runtime_from_one_directory_it_finds_again
     assert other not in libraries
     rpaths = [i for i, flag in enumerate(libraries) if flag.startswith("-Wl,-rpath,")]
     assert all(libraries[i + 1] == toolchain.NEW_DTAGS for i in rpaths), "every rpath is a DT_RUNPATH"
-
-
-if __name__ == "__main__":
-    import tempfile
-
-    test_cudart_is_found_past_a_versioned_soname_by_a_probe_spelled_for_nvcc(Path(tempfile.mkdtemp()))
-    for backend in sorted(RUNTIMES):
-        with pytest.MonkeyPatch.context() as patch:
-            test_a_gpu_kernel_links_its_device_runtime_from_one_directory_it_finds_again_as_a_runpath(
-                Path(tempfile.mkdtemp()), patch, backend
-            )

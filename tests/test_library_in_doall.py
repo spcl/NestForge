@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A library call inside a doall is offered no device library: each iteration of a parallel doall cannot launch its own
 cuBLAS. The same call outside any doall is."""

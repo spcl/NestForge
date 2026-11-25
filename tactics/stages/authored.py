@@ -1,7 +1,7 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Authored moves: moves written from agents' transformation requests (``docs/design/transformation-requests.md``)
-and kept in a catalogue folder that every session loads. Each is a DaCe pattern transformation; NestForge offers it
+and kept in a catalogue folder that every session loads. Each is a DaCe pattern transformation; Tactics offers it
 wherever DaCe's pattern matcher finds it, applies it through ``apply_to`` (its ``can_be_applied`` checked first), and
 checks the result against the oracle like every move. They are tested, not proven.
 
@@ -29,7 +29,7 @@ from tactics.paths import REPO_ROOT
 #: The family every authored move belongs to; a run switches them off together.
 AUTHORED_FAMILY = "authored"
 #: The environment variable naming the catalogue folder; unset, the repository's ``catalogue``.
-CATALOGUE_ENV = "NESTFORGE_CATALOGUE"
+CATALOGUE_ENV = "TACTICS_CATALOGUE"
 #: The row keyword of each pattern node type, as the tree and ``list_move_kinds`` name rows.
 ROW_KINDS: dict[type, str] = {
     nodes.MapEntry: "doall",
@@ -78,7 +78,7 @@ def load_move(folder: Path) -> AuthoredMove:
     :raises CatalogueError: The file does not run or lacks a field, or a row is no pattern node."""
     path = folder / "move.py"
     # a catalogue entry is a file, not a package module: loaded by path, as replay loads a solution
-    spec = importlib.util.spec_from_file_location(f"nestforge_authored_{folder.name.replace('-', '_')}", path)
+    spec = importlib.util.spec_from_file_location(f"tactics_authored_{folder.name.replace('-', '_')}", path)
     if spec is None or spec.loader is None:
         raise CatalogueError(f"{folder.name}: no move.py")
     module = importlib.util.module_from_spec(spec)

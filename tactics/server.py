@@ -1,8 +1,8 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A :class:`Session` in a process of its own, driven over a pipe: the caller's threads never fork, and a crash in
 generated code ends this process, not the caller. The HPCAgent-Bench plugin serves each episode's kernel with one.
-HPCAgent-Bench is imported when a session starts, so importing nestforge never loads it.
+HPCAgent-Bench is imported when a session starts, so importing tactics never loads it.
 
 A call that builds or runs code stops when its caller asks (:data:`STOP_SIGNAL`), keeping the session and everything
 it already built and measured, so the same call goes on from there."""
@@ -77,7 +77,7 @@ def finalize(session: Session) -> Final:
     """The session's program assembled into the folder the judge and the agent share, one folder per session."""
     from hpcagent_bench.harness.sandbox import shared_dir
 
-    folder = Path(session.shared_root or shared_dir()) / "nestforge" / session.work_dir.name
+    folder = Path(session.shared_root or shared_dir()) / "tactics" / session.work_dir.name
     folder.mkdir(parents=True, exist_ok=True)
     # a folder per finalize: a grade still copying an earlier library must not read this one
     final = session.finalize(Path(tempfile.mkdtemp(prefix="final-", dir=folder)))
@@ -335,14 +335,14 @@ def bench_data(setup: Setup) -> tuple[dict[str, np.ndarray], Reference | None]:
             expected = numpy_outputs(kernel.spec, dict(data))
         except ReferenceUnavailable as fallback:
             print(
-                f"nestforge: {setup.kernel}: no reference, outputs go unchecked: {err}{hint}; {fallback}",
+                f"tactics: {setup.kernel}: no reference, outputs go unchecked: {err}{hint}; {fallback}",
                 file=sys.stderr,
                 flush=True,
             )
             return inputs, None
         source = NUMPY_REFERENCE
         print(
-            f"nestforge: {setup.kernel}: the bench has no reference ({err}{hint}); outputs are graded against the "
+            f"tactics: {setup.kernel}: the bench has no reference ({err}{hint}); outputs are graded against the "
             "kernel's NumPy function instead",
             file=sys.stderr,
             flush=True,
@@ -410,7 +410,7 @@ def started_session(setup: Setup, codegen: Codegen = "sweep") -> Session:
     and code generation (``codegen``, the stage 6 sweep by default) run on their defaults."""
     kernel = corpus_kernel(setup.kernel)
     if kernel is None:
-        raise LookupError(f"{setup.kernel!r} has no DaCe program NestForge can start from")
+        raise LookupError(f"{setup.kernel!r} has no DaCe program Tactics can start from")
     session = Session(
         kernel.to_sdfg(),
         Targets(gpu=setup.gpu),
@@ -776,8 +776,8 @@ class SessionProcess:
         # not a daemon: the session forks and spawns children of its own; the finalizer ends it with the caller, ahead
         # of the join of every child that multiprocessing makes at exit, which a weakref.finalize may come after
         self.process = context.Process(target=own_group, args=(target, child, setup, os.getpid(), scratch))
-        # libomp, the one runtime NestForge links (plugin.toml openmp), with the BLAS and FFTW built against it
-        with openmp_environment("nestforge"):
+        # libomp, the one runtime Tactics links (plugin.toml openmp), with the BLAS and FFTW built against it
+        with openmp_environment("tactics"):
             self.process.start()
         child.close()
         self.end = Finalize(self, end_session, args=(self.process.pid, scratch), exitpriority=0)

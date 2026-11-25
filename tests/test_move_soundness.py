@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A move that answers ``applied`` leaves a program that computes the same and still builds; one that cannot, is not
 offered."""
@@ -213,6 +213,7 @@ def test_an_expanded_library_call_dace_cannot_cost_still_gets_a_tree(name: str, 
     assert "no work= or depth=" in sut.describe(costs=True)
 
 
+# Reproducer: work-depth failed on a WCR over an ordering edge (durbin, DaCe 5f57d89143)
 def test_durbin_with_every_library_call_expanded_is_costed(tmp_path: Path) -> None:
     """A removed copy's WCR no longer lands on an ordering edge, which work-depth analysis failed on (DaCe
     5f57d89143): the whole tree carries costs."""

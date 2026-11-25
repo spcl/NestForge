@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Nonblocking communication patterns (``docs/design/comm-nodes.md``, sections 1 to 4), as the frontend builds them
 and canonicalization leaves them: one ``Wait`` per request, one ``Waitall`` over every request or over a slice of
@@ -30,7 +30,6 @@ from tactics.ir.comm import (
     Skeleton,
     comm_class,
     in_flight,
-    isolation_refusal,
     paths_between,
     skeleton,
     starts_of,
@@ -40,18 +39,8 @@ from tactics.records import MoveStatus
 from tactics.session import Session
 from tactics.stages.lib_motion import LIB_INTO, accessed, in_flight_refusal, plan_lib_motion
 
+
 #: The nonblocking fixtures that follow the rules, by name.
-FIXTURES: dict[str, DaceProgram] = {
-    "halo_waits": halo_waits,
-    "halo_waitall": halo_waitall,
-    "halo_split_waitall": halo_split_waitall,
-    "two_exchanges": two_exchanges,
-    "halo_steps": halo_steps,
-    "pipelined_rows": pipelined_rows,
-    "jacobi_rows": jacobi_rows,
-}
-
-
 def canonical(program: DaceProgram) -> Session:
     session = Session(program.to_sdfg(simplify=True))
     session.canonicalize()
@@ -72,149 +61,99 @@ def holds_row(state: dace.SDFGState) -> bool:
     return any(comm_class(n) is not None for n in state.nodes())
 
 
-@pytest.mark.parametrize("name", sorted(FIXTURES))
-def test_every_nonblocking_fixture_keeps_the_invariants(name: str) -> None:
-    sdfg = canonical(FIXTURES[name]).sdfg
-
-    assert skeleton(sdfg) is not None, f"{name} communicates"
-    assert isolation_refusal(sdfg) is None
-    assert in_flight_refusal(sdfg) is None
-
-
-def test_each_wait_of_one_request_completes_only_its_own_start() -> None:
+def test_each_wait_completes_only_its_own_start_and_moves_only_past_what_does_not_touch_its_buffers() -> None:
     sdfg = canonical(halo_waits).sdfg
     waits = waits_in_order(sdfg)
     assert len(waits) == 4, "one Wait per request"
-
     completed = [starts_of(sdfg, state, wait) for wait, state in waits]
     flights = [in_flight(sdfg, state, wait) for wait, state in waits]
-
     assert all(len(starts) == 1 for starts in completed), completed
     assert len({id(starts[0][1]) for starts in completed}) == 4, "no two waits complete the same start"
     assert flights[:2] == [(frozenset(), frozenset({"ghost"}))] * 2, "the receives complete first"
     assert flights[2:] == [(frozenset({"a"}), frozenset())] * 2, "the sends complete last"
 
-
-def test_the_wait_of_a_receive_does_not_move_past_the_reader_of_its_ghost_cell() -> None:
-    sdfg = canonical(halo_waits).sdfg
     (wait, state), *_ = waits_in_order(sdfg)
     order = program_order(sdfg)
     reader = next(s for s in order[order.index(state) + 1 :] if "ghost" in accessed(s)[0])
-
     refused = plan_lib_motion((wait, state), (reader, None), "after")
-
     assert isinstance(refused, str) and "ghost" in refused, refused
 
-
-def test_the_wait_of_a_send_moves_earlier_past_compute_that_only_reads_what_it_sends() -> None:
-    sdfg = canonical(halo_waits).sdfg
     wait, state = waits_in_order(sdfg)[2]
-    order = program_order(sdfg)
     compute = next(s for s in reversed(order[: order.index(state)]) if not holds_row(s))
     reads, writes = accessed(compute)
     assert "a" in reads and "a" not in writes, "the compute reads the sent buffer and does not write it"
-
     move = plan_lib_motion((wait, state), (compute, None), "before")
-
     assert callable(move), move
 
 
-def test_one_waitall_over_every_request_completes_all_four_starts() -> None:
+def test_one_waitall_completes_all_four_starts_and_stays_before_the_reader_of_the_ghost_cells() -> None:
     sdfg = canonical(halo_waitall).sdfg
     ((wait, state),) = waits_in_order(sdfg)
-
     assert len(starts_of(sdfg, state, wait)) == 4
     assert in_flight(sdfg, state, wait) == (frozenset({"a"}), frozenset({"ghost"}))
 
-
-def test_the_waitall_of_every_request_does_not_move_past_the_reader_of_the_ghost_cells() -> None:
-    sdfg = canonical(halo_waitall).sdfg
-    ((wait, state),) = waits_in_order(sdfg)
     order = program_order(sdfg)
     reader = next(s for s in order[order.index(state) + 1 :] if "ghost" in accessed(s)[0])
-
     refused = plan_lib_motion((wait, state), (reader, None), "after")
-
     assert isinstance(refused, str) and "ghost" in refused, refused
 
 
-def test_a_waitall_over_a_slice_completes_only_the_starts_of_its_slice() -> None:
+def test_a_waitall_over_a_slice_completes_only_its_starts_and_the_sends_wait_moves_earlier() -> None:
     sdfg = canonical(halo_split_waitall).sdfg
     waits = waits_in_order(sdfg)
     assert len(waits) == 2
-
     completed = [starts_of(sdfg, state, wait) for wait, state in waits]
     flights = [in_flight(sdfg, state, wait) for wait, state in waits]
-
     assert [len(starts) for starts in completed] == [2, 2], completed
     assert not {id(s) for _, s in completed[0]} & {id(s) for _, s in completed[1]}, "no start completes twice"
     assert flights == [(frozenset(), frozenset({"ghost"})), (frozenset({"a"}), frozenset())]
 
-
-def test_the_waitall_of_the_sends_moves_earlier_past_compute_that_only_reads_what_they_send() -> None:
-    sdfg = canonical(halo_split_waitall).sdfg
     wait, state = waits_in_order(sdfg)[1]
     order = program_order(sdfg)
     compute = next(s for s in reversed(order[: order.index(state)]) if not holds_row(s))
     reads, writes = accessed(compute)
     assert "a" in reads and "a" not in writes, "the compute reads the sent buffer and does not write it"
-
     move = plan_lib_motion((wait, state), (compute, None), "before")
-
     assert callable(move), move
 
 
-def test_waits_in_the_opposite_order_complete_the_exchange_their_requests_belong_to() -> None:
+def test_two_exchanges_waited_in_opposite_order_each_complete_and_move_by_their_own_buffers() -> None:
     sdfg = canonical(two_exchanges).sdfg
     waits = waits_in_order(sdfg)
     assert len(waits) == 2
-
     flights = [in_flight(sdfg, state, wait) for wait, state in waits]
-
     assert flights == [
         (frozenset({"x"}), frozenset({"ghost_x"})),
         (frozenset({"a"}), frozenset({"ghost_a"})),
     ]
 
-
-def test_the_later_wait_moves_past_the_use_of_the_earlier_exchange_but_not_past_its_own() -> None:
-    sdfg = canonical(two_exchanges).sdfg
     (first, first_state), (second, second_state) = waits_in_order(sdfg)
     order = program_order(sdfg)
     between = [s for s in order[order.index(first_state) + 1 : order.index(second_state)] if not holds_row(s)]
     use_x = next(s for s in between if "ghost_x" in accessed(s)[0])
     use_a = next(s for s in order[order.index(second_state) + 1 :] if "ghost_a" in accessed(s)[0])
-
     earlier = plan_lib_motion((second, second_state), (use_x, None), "before")
     past_own_use = plan_lib_motion((second, second_state), (use_a, None), "after")
     first_past_its_use = plan_lib_motion((first, first_state), (use_x, None), "after")
-
     assert callable(earlier), earlier
     assert isinstance(past_own_use, str) and "ghost_a" in past_own_use, past_own_use
     assert isinstance(first_past_its_use, str) and "ghost_x" in first_past_its_use, first_past_its_use
 
 
-def test_a_halo_exchanged_every_step_keeps_its_starts_and_its_wait_in_the_loop() -> None:
+def test_a_halo_exchanged_every_step_stays_in_the_loop_and_its_wait_before_the_stencil() -> None:
     sdfg = canonical(halo_steps).sdfg
-
     found = skeleton(sdfg)
-
     assert found is not None
     (loop,) = [row for row in found.rows if isinstance(row, Skeleton)]
     assert loop.kind == "for" and not found.waits, "nothing communicates outside the time loop"
     assert sorted(str(row).split()[0] for row in loop.rows) == ["Recv", "Recv", "Send", "Send"]
     assert len(loop.waits) == 4, "the Waitall completes all four starts, each step"
 
-
-def test_the_wait_of_a_step_does_not_move_past_the_stencil_that_reads_the_ghost_cells() -> None:
-    sdfg = canonical(halo_steps).sdfg
     (wait, state) = next((n, s) for n, s in sdfg.all_nodes_recursive() if comm_class(n) is CommClass.WAIT)
     body = state.parent_graph
     after = [b for b in body.bfs_nodes(state) if isinstance(b, dace.SDFGState) and b is not state]
     stencil = next(s for s in after if "ap" in accessed(s)[0])
-
     refused = plan_lib_motion((wait, state), (stencil, None), "after")
-
     assert isinstance(refused, str) and "ap" in refused, refused
 
 

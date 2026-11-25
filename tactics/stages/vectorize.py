@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``vectorize-doall``: DaCe's vectorizer on one top-level doall (``VectorizeMap``), every other doall left
 scalar. Its innermost maps become tiles of ``tile_sizes`` lanes for ``isa``; the body becomes tile loads, tile

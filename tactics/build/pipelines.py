@@ -1,7 +1,7 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A kernel built through the agent's own LLVM or MLIR pass pipeline: the baselines that choose compiler passes
-instead of NestForge's moves (the paper's LLVM and MLIR agents). They start from the same kernel unit, keep the
+instead of Tactics' moves (the paper's LLVM and MLIR agents). They start from the same kernel unit, keep the
 same C entry, and end in the same static library with its shared twin, so the oracle check, ``get_performance``
 and ``finalize`` treat the build like any other.
 

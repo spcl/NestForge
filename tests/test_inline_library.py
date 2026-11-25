@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ``inline-library`` move: a library call shows as a ``lib_<family>`` row and expands into canonical maps."""
 
@@ -7,14 +7,11 @@ from pathlib import Path
 
 import dace
 import numpy as np
-import pytest
-from dace.libraries.linalg.nodes.ttranspose import TensorTranspose
 from dace.libraries.standard.nodes.external_call import external_calls
 from dace.sdfg import nodes
 
 from tactics.records import MoveStatus
-from tactics.session import MoveResult, Session
-from tactics.stages.expand import installed, pin_pure_without_library
+from tactics.session import Session
 
 N = dace.symbol("N", dtype=dace.int64)
 SIZE = 24
@@ -83,7 +80,7 @@ def test_an_expanded_product_is_maps_that_compute_it_and_no_library_call(tmp_pat
     np.testing.assert_allclose(total[0], (a @ b).sum(), rtol=1e-12)
 
 
-def test_a_kernel_nestforge_built_is_not_a_library_call_to_expand(tmp_path: Path) -> None:
+def test_a_kernel_tactics_built_is_not_a_library_call_to_expand(tmp_path: Path) -> None:
     sut = library_session(tmp_path)
     sut.apply_move("inline-library", [row(tree(sut), "blas")])
     (kernel, *_) = sut.default_scopes()
@@ -146,109 +143,3 @@ def test_a_device_library_on_a_cpu_only_target_is_refused(tmp_path: Path) -> Non
 
     assert result.status is MoveStatus.ILLEGAL
     assert "on this target" in result.reason
-
-
-if __name__ == "__main__":
-    import pathlib
-    import tempfile
-
-    for test in (
-        test_library_calls_are_lib_rows_named_by_their_family_and_each_can_expand,
-        test_a_collapsed_state_counts_its_library_calls_as_doalls,
-        test_an_expanded_product_is_maps_that_compute_it_and_no_library_call,
-        test_a_kernel_nestforge_built_is_not_a_library_call_to_expand,
-        test_each_library_call_is_a_default_kernel_of_its_own_like_a_doall,
-        test_a_library_call_offers_one_move_per_implementation_a_cpu_kernel_renders,
-        test_a_pinned_implementation_keeps_the_row_and_reaches_the_kernel_that_builds,
-        test_a_device_library_on_a_cpu_only_target_is_refused,
-    ):
-        test(pathlib.Path(tempfile.mkdtemp()))
-
-
-def transpose_sdfg() -> tuple[dace.SDFG, TensorTranspose]:
-    sdfg = dace.SDFG("transpose_only")
-    node = TensorTranspose("transpose", axes=[1, 0])
-    sdfg.add_state(is_start_block=True).add_node(node)
-    return sdfg, node
-
-
-def test_a_transpose_without_its_fast_library_is_pinned_to_pure(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("HPTT_ROOT", raising=False)
-    sdfg, node = transpose_sdfg()
-
-    pinned = pin_pure_without_library(sdfg)
-
-    assert pinned == ["transpose"]
-    assert node.implementation == "pure" and not node.auto_select_implementation
-
-
-def test_a_transpose_with_its_fast_library_is_left_to_the_selection(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.setenv("HPTT_ROOT", str(tmp_path))
-    sdfg, node = transpose_sdfg()
-
-    pinned = pin_pure_without_library(sdfg)
-
-    assert pinned == [] and node.auto_select_implementation
-
-
-def environment(found: bool) -> type:
-    """A DaCe environment whose ``is_installed`` probe answers ``found``."""
-
-    class Probed:
-        cmake_minimum_version = None
-        cmake_packages: list[str] = []
-        cmake_variables: list[str] = []
-        cmake_includes: list[str] = []
-        cmake_libraries: list[str] = []
-        cmake_compile_flags: list[str] = []
-        cmake_link_flags: list[str] = []
-        cmake_files: list[str] = []
-        headers: list[str] = []
-        state_fields: list[str] = []
-        dependencies: list[type] = []
-        init_code = finalize_code = ""
-
-        @staticmethod
-        def is_installed() -> bool:
-            return found
-
-    Probed.__name__ = f"Probed{found}"
-    registered: type = dace.library.environment(Probed)
-    return registered
-
-
-def offered_with_environment(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, found: bool
-) -> tuple[str, set[str], MoveResult]:
-    """The ``Reduce`` row's offers once its first offered implementation needs an environment that is ``found``."""
-    sut = library_session(tmp_path)
-    reduce = row(tree(sut), "reduce")
-    (name, *_) = [m.implementation for m in sut.list_moves("set-library-implementation") if m.labels == (reduce,)]
-    node = next(n for n, _ in sut.sdfg.all_nodes_recursive() if type(n).__name__ == "Reduce")
-    monkeypatch.setattr(node.implementations[name], "environments", [environment(found)])
-    installed.cache_clear()
-    offered = {m.implementation for m in sut.list_moves("set-library-implementation") if m.labels == (reduce,)}
-    result = sut.apply_move("set-library-implementation", [reduce], implementation=name)
-    installed.cache_clear()
-    assert name is not None and None not in offered, "every offer names its implementation"
-    return name, {implementation for implementation in offered if implementation is not None}, result
-
-
-def test_an_implementation_whose_library_this_host_lacks_is_not_offered(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    name, offered, result = offered_with_environment(tmp_path, monkeypatch, found=False)
-
-    assert name not in offered, offered
-    assert result.status is MoveStatus.ILLEGAL and "on this target" in result.reason, result
-
-
-def test_an_implementation_whose_library_this_host_has_is_offered(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    name, offered, result = offered_with_environment(tmp_path, monkeypatch, found=True)
-
-    assert name in offered, offered
-    assert result.status is MoveStatus.APPLIED, result

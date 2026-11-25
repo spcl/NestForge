@@ -3,17 +3,17 @@
 [Designs](README.md) · [Stages](../stages.md) · [Bench requests](bench-requests.md)
 
 Status: CPU part built (2026-11-24): `tactics/build/pass_moves.py`, the session calls below, and the
-`nestforge-passes` packet. The GPU moves wait on bench request B16. Written against NestForge `b98494f`; it builds on
+`tactics-passes` packet. The GPU moves wait on bench request B16. Written against Tactics `b98494f`; it builds on
 the survey of 2026-11-19 (`nestforge-workspace/notes/mlir-llvm-agent/survey.md`, pass names checked in the LLVM 22.1.2
 headers and tools) and the skill draft beside it (`SKILL.md`).
 
 ## Goal
 
-An agent rewrites a kernel by applying compiler passes one at a time, the way the NestForge agent applies moves:
+An agent rewrites a kernel by applying compiler passes one at a time, the way the Tactics agent applies moves:
 each pass is a named move with arguments, the agent sees the loops after each move, it can roll a move back, and the
 reference checks the result. The agent works in two phases on the same kernel: MLIR passes on affine and scf loops,
 then LLVM passes on the IR the fixed lowering writes, for CPU and GPU kernels. It is a baseline for the study: what an
-agent reaches with a compiler's own passes, without NestForge's moves. The owner decided on 2026-11-24 that the
+agent reaches with a compiler's own passes, without Tactics' moves. The owner decided on 2026-11-24 that the
 first version covers the GPU, and that the agent is a study column on `scicomp40` only.
 
 ## What exists
@@ -42,7 +42,7 @@ step between: the agent writes one opaque string, sees no loops, and learns only
 
 The moves live in `self.pipeline = ("moves", <JSON of the phase and the moves>)` instead of two new tuples, so
 `set_pipeline`'s rollback, the checkpoints and `pipeline_build` take them unchanged (`PIPELINES["moves"]` is
-`build_pass_moves`). The tools carry their own names beside NestForge's: `view_ir loops=[...]`, `list_pass_moves`,
+`build_pass_moves`). The tools carry their own names beside Tactics': `view_ir loops=[...]`, `list_pass_moves`,
 `apply_pass_move kind arguments` (`kind=rollback` takes the last change back), `advance_pass_phase`. The LLVM outline
 prints each loop's header block and `vec=W`, the widest vector its header computes on; the trip count is left out.
 
@@ -103,7 +103,7 @@ becomes an OpenMP loop.
 
 ### GPU kernels
 
-A kernel the program places on the GPU takes device pointers: NestForge's placement inserts the copies before and
+A kernel the program places on the GPU takes device pointers: Tactics' placement inserts the copies before and
 after the kernel (`Session.transfers`), so the MLIR route needs no copies of its own. The agent starts from the same
 CPF C++ unit a CPU kernel has, and the MLIR phase gains three moves:
 
@@ -127,13 +127,13 @@ without it today: request B16 in [bench-requests.md](bench-requests.md).
 | 1 | Targeting one loop | Whole-function passes. A CPF kernel unit holds one scope's nest, so a function-wide pass already acts on one nest. Per-loop transform scripts wait until a kernel shows two nests that need different arguments |
 | 2 | Cleanup after MLIR moves | Append `canonicalize,cse` to every MLIR move, as the draft does: the outline stays readable and no move depends on debris |
 | 3 | Aliasing lost in cgeist | Re-attach `noalias` in the lowering: DaCe's units mark every array parameter `__restrict__`, and the entry's parameters are known, so the harness sets `llvm.noalias` on the `llvm.func` arguments before `mlir-translate` |
-| 4 | Fortran | Not a question here: every kernel reaches the agent as NestForge's C++ unit, whatever language the program came from |
+| 4 | Fortran | Not a question here: every kernel reaches the agent as Tactics' C++ unit, whatever language the program came from |
 | 7 | A raw pipeline call | No: the two baselines already offer raw strings (`set_mlir_passes`, `set_llvm_passes`). This agent offers named moves only, so its column measures the move interface |
-| 8 | The reference | NestForge's default build of the kernel, as for the two baselines; `default<O3>` is not a move |
+| 8 | The reference | Tactics' default build of the kernel, as for the two baselines; `default<O3>` is not a move |
 | 9 | linalg and the transform dialect | Later: cgeist emits no linalg from loop code |
-| 10 | One agent or two | One agent, two phases, on NestForge's kernel units |
+| 10 | One agent or two | One agent, two phases, on Tactics' kernel units |
 
-| 5 | GPU data | None to move: a GPU kernel's arguments are device pointers, placed by NestForge (owner, 2026-11-24: GPU in the first version) |
+| 5 | GPU data | None to move: a GPU kernel's arguments are device pointers, placed by Tactics (owner, 2026-11-24: GPU in the first version) |
 | 6 | The CUDA runtime of MLIR | Request B16: the bench image builds MLIR with the CUDA runtime |
 
 ## Tests

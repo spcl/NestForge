@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The stage 2 fission moves (:mod:`tactics.stages.moves`): ``for-fission`` and ``doall-fission`` applied until
 nothing splits, and the agent's flow of fission then fusion. Value-preservation (bit-exact vs the un-fissioned

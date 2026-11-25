@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Canonicalization keeps the communication skeleton of every fixture (docs/design/comm-nodes.md, package 1): the
 communication nodes in their order, each in as many loops as before and none inside a doall. Needs DaCe extended

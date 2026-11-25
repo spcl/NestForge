@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Scheduling moves addressed by tree labels: :meth:`Session.list_moves` and :meth:`Session.apply_move`."""
 
@@ -402,9 +402,29 @@ def test_library_calls_get_unique_kernel_family_labels_and_keep_name_equal_to_la
     assert (first.name, second.name) == (first.label, second.label)
 
 
-def test_the_tree_names_its_program_on_the_first_line() -> None:
+def test_malformed_calls_and_labels_that_name_no_row_are_refused_and_change_nothing() -> None:
     sut = Session(vertical_pair.to_sdfg(simplify=True))
     assert sut.describe().splitlines()[0] == f"SDFG '{sut.sdfg.label}'"
+
+    with pytest.raises(ValueError, match="unknown move kind"):
+        sut.apply_move("loop-tiling", ["for0"])
+    with pytest.raises(ValueError, match="unknown move kind"):
+        sut.list_moves("loop-tiling")
+
+    with pytest.raises(ValueError, match="takes 2 label"):
+        sut.apply_move("doall-fusion", ["doall1"])
+
+    before = digest(sut.sdfg)
+    result = sut.apply_move("doall-fusion", ["doall0", "doall99"])
+    assert result.status is MoveStatus.NOT_FOUND and "doall99" in result.reason, result
+    assert digest(sut.sdfg) == before
+
+    (move,) = sut.list_moves("doall-fusion")
+    sut.apply_move(move.kind, move.labels)
+    after_move = digest(sut.sdfg)
+    result = sut.apply_move(move.kind, move.labels)
+    assert result.status is MoveStatus.NOT_FOUND and "changed; read the tree again" in result.reason, result
+    assert digest(sut.sdfg) == after_move
 
 
 def test_listed_moves_name_rows_of_the_current_tree() -> None:
@@ -951,42 +971,6 @@ def test_a_guard_that_reads_the_doall_parameter_is_not_moved_above_it() -> None:
 # refusals that never touch the graph
 
 
-def test_an_unknown_label_is_not_found_and_changes_nothing() -> None:
-    sut = Session(vertical_pair.to_sdfg(simplify=True))
-    before = digest(sut.sdfg)
-
-    result = sut.apply_move("doall-fusion", ["doall0", "doall99"])
-
-    assert result.status is MoveStatus.NOT_FOUND and "doall99" in result.reason, result
-    assert digest(sut.sdfg) == before
-
-
-def test_labels_a_move_retired_are_refused_and_change_nothing() -> None:
-    sut = Session(vertical_pair.to_sdfg(simplify=True))
-    (move,) = sut.list_moves("doall-fusion")
-    sut.apply_move(move.kind, move.labels)
-    after_move = digest(sut.sdfg)
-
-    result = sut.apply_move(move.kind, move.labels)
-
-    assert result.status is MoveStatus.NOT_FOUND and "changed; read the tree again" in result.reason, result
-    assert digest(sut.sdfg) == after_move
-
-
-def test_an_unknown_kind_is_a_malformed_call() -> None:
-    sut = Session(vertical_pair.to_sdfg(simplify=True))
-    with pytest.raises(ValueError, match="unknown move kind"):
-        sut.apply_move("loop-tiling", ["for0"])
-    with pytest.raises(ValueError, match="unknown move kind"):
-        sut.list_moves("loop-tiling")
-
-
-def test_a_wrong_label_count_is_a_malformed_call() -> None:
-    sut = Session(vertical_pair.to_sdfg(simplify=True))
-    with pytest.raises(ValueError, match="takes 2 label"):
-        sut.apply_move("doall-fusion", ["doall1"])
-
-
 def test_a_move_read_on_a_session_applies_to_its_trial_and_leaves_the_session_alone() -> None:
     """``performance`` and the agent's what-ifs run on a trial; the labels must carry over."""
     session, _ = session_and_reference(two_indep)
@@ -1030,6 +1014,7 @@ def test_a_cut_leaves_both_maps_in_one_state_each_with_its_own_nested_body() -> 
     assert not any(e.data.wcr for n in nested for inner in n.sdfg.states() for e in inner.edges())
 
 
+# Reproducer: level loop stuck innermost under a column map (#29, species_sedimentation)
 def test_a_level_loop_under_a_column_map_moves_out_once_the_map_is_cut_around_it() -> None:
     """#29: the level loop under the column map stayed innermost. Cut the map body around the loop, then the
     loop-map interchange applies (DaCe had called a scalar the canonical form reads twice loop-carried)."""
@@ -1167,11 +1152,6 @@ def test_doall_to_for_is_not_offered_on_a_doall_with_nothing_parallel_inside() -
     assert sut.list_moves("doall-to-for") == []
     assert result.status is MoveStatus.ILLEGAL and "no parallelism" in result.reason, result
     assert digest(sut.sdfg) == before
-
-
-def strip_labels(tree: str) -> str:
-    """``tree`` with the numbers of its row labels dropped: a move relabels the rows it rebuilds."""
-    return re.sub(r"\b([a-z]+)\d+\b", r"\1", tree)
 
 
 def test_for_to_doall_right_after_doall_to_for_takes_it_back_with_its_labels() -> None:

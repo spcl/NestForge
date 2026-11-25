@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """For-loop tiling moves: tile a sequential loop at the agent's size and untile it back; each leaves a program that
 computes the same."""
@@ -103,16 +103,3 @@ def test_an_untiled_for_loop_offers_no_untiling(tmp_path: Path) -> None:
     sut = session(tmp_path)
 
     assert sut.list_moves("untile-for") == []
-
-
-if __name__ == "__main__":
-    import pathlib
-    import tempfile
-
-    for test in (
-        test_a_tiled_for_loop_holds_a_loop_over_one_tile_and_untiling_gives_one_loop_back,
-        test_untiling_around_a_kernel_renames_the_iterator_inside_it_and_the_kernel_still_builds,
-        test_a_for_tile_is_one_size_of_at_least_two,
-        test_an_untiled_for_loop_offers_no_untiling,
-    ):
-        test(pathlib.Path(tempfile.mkdtemp()))

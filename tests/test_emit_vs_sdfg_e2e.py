@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """End to end: the emitted code reproduces the DaCe SDFG on the hardest corpus kernels.
 
@@ -52,8 +52,8 @@ LLR_L1 = [
     "tsvc_2_s1113",
     "tsvc_2_s1244",
     "cond_reduce_sum",
-    "ext_break_find_first",
 ]
+# ext_break_find_first: test_llr_emit checks it against a hand reference, a stronger check than this one
 
 # cross-compiler subset: kernels whose nests lower + translate + compile cleanly in every language.
 # numpyto has no C++ target (the C++ lane would recompile the C, same toolchain), so the distinct

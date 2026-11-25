@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 7: a concise report for the agent. A fixed rule table turns raw evidence (validation, per-kernel times,
 compiler remarks) into short hints, most important first."""

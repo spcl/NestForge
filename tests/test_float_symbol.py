@@ -1,8 +1,8 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A float scalar input that canonicalization promotes to a symbol (cp2k_density_matrix_trs4's ``threshold``) is
 bound with its value: ``symbol_inputs`` keeps it, and the built program receives it as a double, not truncated to an
-integer (spcl/NestForge#61)."""
+integer (spcl/tactics#61)."""
 
 import ctypes
 from pathlib import Path

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Regressions from a review of the stages: the snapshot copy of a slice that starts past zero, the snapshot probe
 that must validate what it made, untile-for that must not report a change it did not make, the whole-program timer
@@ -164,7 +164,3 @@ def test_a_remark_compile_that_times_out_is_its_remark(monkeypatch: pytest.Monke
         remarks = feedback.compiler_remarks(src, "g++", ["-O3"])
 
     assert "timed out" in remarks and "k.cpp" in remarks
-
-
-if __name__ == "__main__":
-    pytest.main([__file__])

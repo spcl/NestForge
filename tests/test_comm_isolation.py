@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``isolate_communication`` (``docs/design/comm-nodes.md``, section 2): canonicalization gives every communication row a
 state of its own, cut in the order the data flow fixes, and refuses a row that shares a state with work nothing orders

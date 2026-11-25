@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Kernel optimization on five tiny kernels: the default kernel is a standalone CPF unit, its one C entry takes
 CPF's argument order with the types ``ExternalCall`` declares, ``lib<kernel>.a`` defines that entry, and every

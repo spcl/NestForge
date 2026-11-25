@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 5, kernel optimization: render one kernel as a standalone CPF unit with one C entry, then build and validate
 ``lib<kernel>.a``."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Integer and bool inputs of the arena: an index array filled with zeros turns a gather into one repeated read, and
 a kernel that indexes wrongly then matches its oracle. ``make_inputs`` fills an integer array as the bench does,
@@ -30,7 +30,7 @@ N = dace.symbol("N")
 # These kernels are named constants of the corpus this repo pins, and every one is a gather/scatter whose
 # index array is the whole point of the test. A missing kernel or a nest-less kernel is therefore a broken
 # corpus or a broken splitter -- a failure to surface, never a skip to hide behind. (A skip here would also
-# fail CI, which runs the unit set under NESTFORGE_CI_NO_SKIP=1.)
+# fail CI, which runs the unit set under TACTICS_CI_NO_SKIP=1.)
 def first_nest(kernel: CorpusKernel) -> Boundary:
     sdfg = kernel.to_sdfg(simplify=True)
     canonicalize(sdfg, target="cpu")

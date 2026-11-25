@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """CloudSC blocked layout, written in GPU order: split the column map, then take the level loop out of its body map,
 so each level is one contiguous ``NPROMA`` map (the CPU order)."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Performance feedback for every phase: the whole program's time, where each kernel runs with the transfers that
 implies, and each kernel's own time. Stages not reached yet run with their defaults on a copy (:meth:`Session.trial`),

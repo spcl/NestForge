@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A communication row is never a kernel and never part of one (``docs/design/comm-nodes.md``, section 5): the default
 scopes cut at it, ``set_scope`` refuses it, a kernel source may not call MPI, NCCL or RCCL, a program that

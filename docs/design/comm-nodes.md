@@ -1,14 +1,14 @@
-# Communication nodes in NestForge
+# Communication nodes in Tactics
 
 [Designs](README.md) · [Structure tree](../ir.md) · [Stages](../stages.md)
 
 Status: motion rules built (2026-11-19, `tactics/ir/comm.py`, `stages/lib_motion.py`, `tests/test_comm_motion.py`):
-the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused. The tree rows of section 2 are built (2026-11-23, `comm_line` in `tactics/ir/comm.py`, `tests/test_comm_tree.py`). The invariants of section 4 are built (2026-11-23, `Session.comm_refusal`, `tests/test_comm_invariants.py`; nonblocking patterns 2026-11-24, `tests/test_comm_nonblocking.py`); `isolate_communication` is built (2026-11-24, `tactics/ir/comm.py`, run by `canonicalize` after `explicit_copies`, `tests/test_comm_isolation.py`); it refuses a row whose state holds other work with no data flow to order it. Section 5 is built (2026-11-23, `tests/test_comm_guards.py`): no row is a doall or joins a kernel, the default scopes cut at rows, `set_scope` refuses them, a kernel source may not call MPI, NCCL or RCCL, a program that communicates is placed on the CPU, and a row is not inlined and runs on MPI only. Section 6 is built (2026-11-23, `tests/test_comm_layout.py`): `relayout` refuses and does not list an argument the bench splits over the ranks (`Session.distributed`, from the spec's `mpi.arrays`); the buffers of communication rows, blocking and nonblocking, are relayout's to pack (`pack_mpi_buffers`, package 17), so they need no refusal. Package 15 of 12.7 is built (2026-11-24, `ranks` on `profile` with `mpi_time_us` per rank count, `plugin/tactics/tools/nestforge.py`). Package 8's communicator check waits for bench B1: bench B3's DaCe forms call `MPI.COMM_WORLD`, which the check would refuse. Packages 9, 10 and 16 wait on bench B1 and B4. The rest is design, not implemented. Written 2026-11-16 against NestForge `bf068ae`, DaCe extended `561defb2a6`, and
+the classes of section 1 and rules R1 to R5 of section 3, with `lib-into` refused. The tree rows of section 2 are built (2026-11-23, `comm_line` in `tactics/ir/comm.py`, `tests/test_comm_tree.py`). The invariants of section 4 are built (2026-11-23, `Session.comm_refusal`, `tests/test_comm_invariants.py`; nonblocking patterns 2026-11-24, `tests/test_comm_nonblocking.py`); `isolate_communication` is built (2026-11-24, `tactics/ir/comm.py`, run by `canonicalize` after `explicit_copies`, `tests/test_comm_isolation.py`); it refuses a row whose state holds other work with no data flow to order it. Section 5 is built (2026-11-23, `tests/test_comm_guards.py`): no row is a doall or joins a kernel, the default scopes cut at rows, `set_scope` refuses them, a kernel source may not call MPI, NCCL or RCCL, a program that communicates is placed on the CPU, and a row is not inlined and runs on MPI only. Section 6 is built (2026-11-23, `tests/test_comm_layout.py`): `relayout` refuses and does not list an argument the bench splits over the ranks (`Session.distributed`, from the spec's `mpi.arrays`); the buffers of communication rows, blocking and nonblocking, are relayout's to pack (`pack_mpi_buffers`, package 17), so they need no refusal. Package 15 of 12.7 is built (2026-11-24, `ranks` on `profile` with `mpi_time_us` per rank count, `plugin/tactics/tools/tactics.py`). Package 8's communicator check waits for bench B1: bench B3's DaCe forms call `MPI.COMM_WORLD`, which the check would refuse. Packages 9, 10 and 16 wait on bench B1 and B4. The rest is design, not implemented. Written 2026-11-16 against Tactics `bf068ae`, DaCe extended `561defb2a6`, and
 HPCAgent-Bench `cc1124254`, and reviewed the same day against the code each section names.
 
 ## Goal
 
-NestForge optimizes a program that communicates between MPI ranks. The agent moves the compute around the
+Tactics optimizes a program that communicates between MPI ranks. The agent moves the compute around the
 communication and never writes or edits communication code. Every rank runs the same program, and a move is legal
 only if the program stays correct at every rank count.
 
@@ -35,7 +35,7 @@ or `Waitall` completes it. `CommNode.has_side_effects` is true for the nodes tha
 reorder (`Send`, `Recv`, `Isend`, `Irecv`, `Wait`, `Waitall`, `Barrier`, `Abort`, `CommSplit`, `CommFree`, and a
 collective with `nonblocking` set). A blocking collective reports no side effects.
 
-NestForge already treats a communication node as a library call, and four behaviors follow from that. Three of them
+Tactics already treats a communication node as a library call, and four behaviors follow from that. Three of them
 are wrong or incomplete for communication.
 
 | Where | Today | Problem |
@@ -138,7 +138,7 @@ reason text. A `QUERY` row moves like any other library call.
 | R5 view | A row wired to a view or an aliasing array stays, as for every library call. | existing text |
 
 R3 needs one change only: `effect_of` returns, for a `WAIT`, the union of the buffers of its `START` rows. This is the
-rule NestForge already uses for a host `Sync`, whose effect is the device work it waits for. A block that writes a
+rule Tactics already uses for a host `Sync`, whose effect is the device work it waits for. A block that writes a
 buffer in flight would have to cross the `START` (which reads the buffer) or the `WAIT` (which now reads it too), and
 both crossings are refused.
 
@@ -252,13 +252,13 @@ class. Three things change for such a session.
 
 **Communicator.** The bench hands every rank a Cartesian communicator as the `comm` argument of the entry. DaCe's
 nodes communicate over the handle on their `_comm` connector, else over a DaCe process grid, else over the world
-(`mpi_communicator` in `dace/libraries/comm/nodes/node.py`). At session start, NestForge checks that the `_comm`
+(`mpi_communicator` in `dace/libraries/comm/nodes/node.py`). At session start, Tactics checks that the `_comm`
 connector of every communication row leads to the entry's `comm` argument through a `CommF2c` row. A row on the world
 communicator or on a process grid refuses the session, with the row's label, since the bench's driver owns the grid.
 
 **Timing and correctness.** `get_performance` runs the program through the bench's distributed driver and never
-through NestForge's in-process call. The bench owns `main`, `MPI_Init`, the scatter, the gather, and the timed
-bracket, and it already compares the gathered output with the single-node reference. NestForge needs the judge's
+through Tactics' in-process call. The bench owns `main`, `MPI_Init`, the scatter, the gather, and the timed
+bracket, and it already compares the gathered output with the single-node reference. Tactics needs the judge's
 `/profile` route to take rank counts ([bench request B2](bench-requests.md)). Per rank count, the answer holds the
 time of the slowest rank, the verdict with the mismatched outputs, and the slowest rank's time inside MPI calls.
 
@@ -275,7 +275,7 @@ time) come from the slowest rank of the run.
 `BenchTarget` gains `distributed: bool`. `finalize.assemble` asks the bench for the distributed form of the program,
 the entry `<base>_mpi(local tiles, local scalars, MPI_Fint comm, workspace, workspace_size)` of the bench's ABI
 contract, and builds it with the MPI flags the bench names ([bench request B1](bench-requests.md)). The `Submission`
-is the library, as today. NestForge adds no `distribute` request, so the manifest's default distribution applies.
+is the library, as today. Tactics adds no `distribute` request, so the manifest's default distribution applies.
 
 ### 9. Inputs
 
@@ -297,7 +297,7 @@ rely on `has_side_effects`, and a blocking collective reports none. One gap is k
 
 The first work package settles this before anything else is built: it canonicalizes each fixture and compares the
 skeleton before and after. A pass that changes the skeleton is fixed in DaCe on extended, with a regression test
-there, and never worked around in NestForge.
+there, and never worked around in Tactics.
 
 **Settled on 2026-11-16 (DaCe extended `561defb2a6`): canonicalization breaks the skeleton.** Two probes show it.
 
@@ -319,8 +319,8 @@ comes after `skew-wavefront`.
 a communicator (`CommRank`, `CommSize`, `CommF2c`) excepted. `loop_analysis.ordered_side_effects` finds such nodes in
 a block, and `LoopToMap` (refusal `ORDERED_SIDE_EFFECT`), `LoopFusion`, `LoopFission`, the loop distribution, and
 `WavefrontSkew` refuse to parallelize, interleave, separate, or skew them. Both probes keep their loop, and the
-computation beside a collective still parallelizes (`tests/canonicalize/canonicalize_keeps_ordered_side_effects_test.py`).
-NestForge's package 1 test follows once the bench pins this commit.
+computation beside a collective still parallelizes (DaCe's `tests/canonicalize/canonicalize_keeps_ordered_side_effects_test.py`).
+Tactics' package 1 test follows once the bench pins this commit.
 
 ### 10. Agent-facing text
 
@@ -392,7 +392,7 @@ the wait.
 #### 12.3 Overlap is motion, not a move (user 2026-11-21)
 
 An overlap is a `START` row moved earlier and its `WAIT` moved later. `lib-before` and `lib-after` already do this
-under R1 to R5, so NestForge gets no `overlap-communication` move. Two moves make the motion reachable:
+under R1 to R5, so Tactics gets no `overlap-communication` move. Two moves make the motion reachable:
 
 - **`split-blocking`** turns a `BLOCKING` row into a `START` row and a `WAIT` row in place: `Send` into `Isend` and
   `Wait`, `Recv` into `Irecv` and `Wait`, and a collective into its `NonblockingCommNode` form (`nonblocking=True`) and
@@ -403,21 +403,21 @@ under R1 to R5, so NestForge gets no `overlap-communication` move. Two moves mak
 
 The refusal of a `lib-after` on a wait names the statement that stops it (12.1), which tells the agent what to split.
 DaCe's `dace.libraries.comm.schedule.overlap_communication` stays the reference for the rules and the source of
-further fixtures; NestForge does not call it (a schedule tree round trip renames rows).
+further fixtures; Tactics does not call it (a schedule tree round trip renames rows).
 
 #### 12.4 Time inside communication (owner 2026-11-23: B2's total, no per-row times)
 
 The number an overlap reduces is the time the slowest rank spends inside MPI calls. Bench request B2 measures it:
 `/profile` with `ranks` runs the program at each rank count as a grade runs it and reports, per count, `time_us`
 (the timed bracket on the slowest rank) and `mpi_time_us` (time inside MPI calls on that rank, from a PMPI shim).
-The bench's own agent-side `profile` does not offer `ranks`, so NestForge's `profile` adds it on a distributed task
+The bench's own agent-side `profile` does not offer `ranks`, so Tactics' `profile` adds it on a distributed task
 and shows one row per rank count. `Performance` stays a single-node measurement: it runs in the judge's process
 without MPI. Times per communication row (DaCe timer instrumentation per row) wait until an agent needs them.
 
 #### 12.5 Who calls the overlap
 
 The default pipeline never splits or moves communication rows (owner's decision, 2026-11-16). `run_defaults` leaves
-communication rows where the program had them, so `nestforge_default` shows no overlap. A reference solution or an
+communication rows where the program had them, so `tactics_default` shows no overlap. A reference solution or an
 agent calls the move and the splits.
 
 #### 12.6 Tests
@@ -443,8 +443,8 @@ agent calls the move and the splits.
 | 11 | Effects by subset, for crossings with a communication row and for I2 | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_subsets.py` | 5 |
 | 12 | `split-doall` | `stages/moves.py`, `docs/stages.md`, `tests/test_split_doall.py` | none |
 | 13 | dropped (user 2026-11-22): `lib-after` on the wait does it, after 11 | | |
-| 14 | `split-blocking` | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_overlap.py` | none |
-| 15 | Time inside communication (12.4): `ranks` on NestForge's `profile` | `plugin/tactics/tools/nestforge.py`, `plugin/tactics/answers.py`, `tests/test_bench_plugin.py`, `tests/test_answer_text.py` | 8, bench B2 |
+| 14 | `split-blocking` | `stages/lib_motion.py`, `ir/comm.py`, `tests/test_comm_ranks.py` | none |
+| 15 | Time inside communication (12.4): `ranks` on Tactics' `profile` | `plugin/tactics/tools/tactics.py`, `plugin/tactics/answers.py`, `tests/test_bench_plugin.py`, `tests/test_answer_text.py` | 8, bench B2 |
 | 16 | Reference solutions with the overlap for `jacobi_2d` and `heat_3d` | `reference_solutions/` | 10, 11, 12, 14 |
 | 17 | Relayout around an exchange (12.8): test on `redistribute`, fix refusals | `tests/test_comm_ranks.py` | none |
 | 18 | Slice views of communication buffers removed in canonicalization (`RemoveSliceView` on a view that only feeds a `CommNode`; user 2026-11-22), so R5 no longer pins `Isend`/`Irecv`/`Allreduce` on a slice; a view that cannot become a pointer (strided) stays and stays pinned | `stages/canonicalize.py`, `tests/test_comm_motion.py`, `tests/comm_rank_programs.py` | 5 |
@@ -453,7 +453,7 @@ Package 12 has no dependency on communication and can be built at any time.
 
 #### 12.8 Layouts around an exchange (OMEN, SC19)
 
-OMEN computes in one layout, transposes locally, exchanges in another layout, and transposes back. NestForge adds no
+OMEN computes in one layout, transposes locally, exchanges in another layout, and transposes back. Tactics adds no
 move for it: the `relayout` and `relayout_local` moves reuse relayout's passes. `relayout.passes.sdfg.pack_mpi_buffers`
 routes an MPI buffer of a laid-out array through a packed transient (pack before a send, unpack after a receive) and
 keeps it in place where both ends share a layout; `library_rules` leaves `CommNode` to that pass. The pack and unpack
@@ -467,14 +467,14 @@ Each package is one pull request with its tests. The order is the dependency ord
 | # | Package | Files | Depends on |
 |---|---|---|---|
 | 1 | Fixtures and the canonicalization test: a `jacobi_2d` halo (`Isend`, `Irecv`, `Waitall`), a residual `Allreduce` in the time loop, a ring of `Send` and `Recv` | `tests/comm_programs.py`, `tests/test_comm_canonical.py` | none |
-| 2 | `ir/comm.py` (classes, `comm_rows`, `starts_of`, `buffers`, `skeleton`) and `isolate_communication` | `tactics/ir/comm.py`, `stages/canonicalize.py`, `tests/test_comm_classes.py` | 1 |
+| 2 | `ir/comm.py` (classes, `comm_rows`, `starts_of`, `buffers`, `skeleton`) and `isolate_communication` | `tactics/ir/comm.py`, `stages/canonicalize.py`, `tests/test_comm_nonblocking.py` | 1 |
 | 3 | Tree rows and fields | `ir/introspect.py`, `docs/ir.md`, `tests/test_comm_tree.py` | 2 |
 | 4 | The four invariants after every kept change | `session.py`, `ir/comm.py`, `tests/test_comm_invariants.py` | 2 |
 | 5 | Motion rules R1 to R5, and `lib-into` refused | `stages/lib_motion.py`, `tests/test_comm_motion.py` | 2 |
 | 6 | Scopes, kernels, placement, and what `list_moves` offers | `stages/moves.py`, `stages/scopes.py`, `ir/names.py`, `stages/placement.py`, `stages/kernel.py`, `tests/test_comm_guards.py` | 4 |
 | 7 | Layout rule | `stages/layout.py`, `server.py`, `tests/test_comm_layout.py` | 2 |
-| 8 | Session: communicator check, timing at rank counts, reports | `session.py`, `stages/performance.py`, `tests/test_comm_performance.py` | bench B2 |
-| 9 | Finalize in the distributed ABI | `stages/finalize.py`, `tests/test_comm_finalize.py` | bench B1 |
+| 8 | Session: communicator check, timing at rank counts, reports | `session.py`, `stages/performance.py`, tests with the package | bench B2 |
+| 9 | Finalize in the distributed ABI | `stages/finalize.py`, tests with the package | bench B1 |
 | 10 | Plugin: prompt paragraph, skill section, tool argument `ranks`, reference solutions for the two stencils | `plugin/tactics/`, `reference_solutions/` | 8, 9, bench B3, B4 |
 
 Packages 1 to 7 need nothing from the bench and can start now. Package 1 comes first: if canonicalization changes the
@@ -508,7 +508,7 @@ A new marker `mpi` joins `pyproject.toml`: "launches MPI ranks; its own CI job".
 ## Done means
 
 1. The thirteen tests pass in CI.
-2. `nestforge_reference` on `jacobi_2d` and `heat_3d`, distributed, is graded correct at every rank count of the
+2. `tactics_reference` on `jacobi_2d` and `heat_3d`, distributed, is graded correct at every rank count of the
    setup. Its time is reported next to the bench's C reference. The first version promises no speedup of the
    exchange.
 3. A stub agent episode on `jacobi_2d` runs in the bench's user-plugin CI.

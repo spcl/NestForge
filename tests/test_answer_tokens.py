@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``scripts/answer_tokens.py``: the answers of a fixed call sequence, rendered as the agent reads them and counted."""
 
@@ -27,8 +27,8 @@ def script() -> ModuleType:
 
 
 @pytest.fixture(scope="module")
-def answers(nestforge_plugin: tuple[Plugin, ...]) -> Iterator[ModuleType]:
-    from hpcagent_bench_plugins.nestforge import answers  # importable once the bench loaded the plugin
+def answers(tactics_plugin: tuple[Plugin, ...]) -> Iterator[ModuleType]:
+    from hpcagent_bench_plugins.tactics import answers  # importable once the bench loaded the plugin
 
     yield answers
 
@@ -37,7 +37,7 @@ def assistant(*blocks: dict[str, Any]) -> str:
     return json.dumps({"type": "assistant", "message": {"content": list(blocks)}})
 
 
-def test_a_transcript_gives_its_nestforge_calls_in_order_once_each() -> None:
+def test_a_transcript_gives_its_tactics_calls_in_order_once_each() -> None:
     sut = script()
     lines = [
         assistant({"type": "tool_use", "id": "a", "name": "mcp__hpcagent__view_tree", "input": {"expand": ["s1"]}}),
@@ -77,7 +77,7 @@ def test_the_v1_answer_is_the_bench_mcp_text_of_the_route_answer() -> None:
 
 
 def test_the_current_answer_is_the_plugins_rendering_and_shorter_than_v1(
-    nestforge_plugin: tuple[Plugin, ...], answers: ModuleType
+    tactics_plugin: tuple[Plugin, ...], answers: ModuleType
 ) -> None:
     """``current`` is what the agent reads since #102: the plugin's own rendering of the route answer, so the
     measurement follows the plugin, not a copy of it."""
@@ -85,7 +85,7 @@ def test_the_current_answer_is_the_plugins_rendering_and_shorter_than_v1(
     moves = [{"kind": "tile-for", "labels": ["for3"]}, {"kind": "interchange-for", "labels": ["for3", "for4"]}]
     reply = Reply(result=moves)
     route = sut.ToolAnswer(tool="list_moves", result=moves, performance=None).to_json()
-    from hpcagent_bench_plugins.nestforge.wire import MOVE_DEFAULTS  # importable once the bench loaded the plugin
+    from hpcagent_bench_plugins.tactics.wire import MOVE_DEFAULTS  # importable once the bench loaded the plugin
 
     current = sut.rendered_current("list_moves", reply)
 
@@ -112,9 +112,9 @@ def test_counting_skips_timed_tools_unless_measured_and_counts_each_format() -> 
     assert counted[1].call_tokens == len('{"name": "apply_move", "input": {"kind": "rollback", "labels": []}}')
 
 
-def test_the_scripts_answer_record_has_the_routes_fields(nestforge_plugin: tuple[Plugin, ...]) -> None:
+def test_the_scripts_answer_record_has_the_routes_fields(tactics_plugin: tuple[Plugin, ...]) -> None:
     sut = script()
-    (route,) = [m for name, m in sys.modules.items() if name.endswith("routes.nestforge") and "ToolAnswer" in vars(m)]
+    (route,) = [m for name, m in sys.modules.items() if name.endswith("routes.tactics") and "ToolAnswer" in vars(m)]
 
     assert sut.ToolAnswer.model_fields.keys() == vars(route)["ToolAnswer"].model_fields.keys()
 
@@ -189,7 +189,7 @@ def test_a_wrapped_command_counts_as_the_command_it_wraps() -> None:
 
 
 def test_a_call_with_invalid_arguments_gets_the_routes_error_and_never_reaches_the_session(
-    nestforge_plugin: tuple[Plugin, ...],
+    tactics_plugin: tuple[Plugin, ...],
 ) -> None:
     """An agent's ``apply_move`` with no arguments (bfs, 11-03) was refused by the route's schema; replayed straight
     into the session it crashed the replay with ``KeyError: 'kind'``."""

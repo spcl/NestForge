@@ -1,12 +1,13 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """What the agent reads back from a tool: the judge's answer as short lines, the same facts without the JSON layout.
 The judge, its journal and every other caller keep the records; only the agent's copy is rendered. Standard library
-only, so the agent image (no DaCe, no NestForge) runs it."""
+only, so the agent image (no DaCe, no Tactics) runs it."""
 
 import contextlib
 import json
 from collections.abc import Callable, Collection, Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 __all__ = [
@@ -373,7 +374,7 @@ def phase_answer(answer: dict[str, Any]) -> dict[str, Any]:
 
 
 #: Tool -> how its answer reaches the agent, given the move arguments' defaults; tools not here answer as they came.
-#: The phase tools render with :func:`phase_answer` after their guide is added (``tools/nestforge.py``).
+#: The phase tools render with :func:`phase_answer` after their guide is added (:func:`agent_answer`).
 RENDERED: dict[str, Callable[[dict[str, Any], Mapping[str, object]], dict[str, Any]]] = {
     "list_moves": moves_answer,
     "list_scope_moves": moves_answer,
@@ -384,3 +385,28 @@ RENDERED: dict[str, Callable[[dict[str, Any], Mapping[str, object]], dict[str, A
     "list_move_kinds": lambda answer, defaults: kinds_answer(answer),
     "get_performance": lambda answer, defaults: performance_answer(answer),
 }
+
+
+#: The guides of the phases, one file each; a phase tool's answer carries the guide of the phase it reached.
+PHASE_GUIDES = Path(__file__).resolve().parent / "prompt" / "phases"
+#: The tools that move between phases.
+PHASE_TOOLS = frozenset({"advance_phase", "undo_phase", "return_to_phase"})
+
+
+def with_guide(answer: dict[str, Any]) -> dict[str, Any]:
+    """A phase tool's ``answer`` with the guide of the phase it moved to."""
+    result = answer.get("result")
+    if isinstance(result, dict) and result.get("status") == "moved":
+        guide = PHASE_GUIDES / f"{result.get('phase')}.md"
+        if guide.is_file():
+            return {**answer, "guide": guide.read_text()}
+    return answer
+
+
+def agent_answer(name: str, answer: dict[str, Any], defaults: Mapping[str, object]) -> dict[str, Any]:
+    """The judge's ``answer`` to the tool ``name`` as the agent reads it, wherever it is rendered: the agent-side tool or
+    the judge's MCP endpoint."""
+    if name in PHASE_TOOLS:
+        return phase_answer(with_guide(answer))
+    render = RENDERED.get(name)
+    return answer if render is None else render(answer, defaults)

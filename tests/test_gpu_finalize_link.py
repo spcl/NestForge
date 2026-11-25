@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The commands ``finalize`` builds a GPU program with, read without a GPU or a GPU toolkit: nvcc takes every kernel
 link flag as ``-Xlinker=``, hipcc keeps ``-Wl,``, and the device unit is in the dialect it is named for."""
@@ -133,21 +133,3 @@ def test_a_gpu_finalize_renders_and_builds_its_device_unit_in_dace_s_backend_not
     assert any(cmd[cmd.index("-c") + 1].endswith(f"_device{suffix}") for cmd in commands if "-c" in cmd)
     assert f"#include {header}" in final.device_source
     assert f"#include {BACKENDS[other][2]}" not in final.device_source
-
-
-if __name__ == "__main__":
-    import tempfile
-
-    with pytest.MonkeyPatch.context() as patch:
-        test_a_cuda_finalize_spells_every_kernel_link_flag_for_nvcc(Path(tempfile.mkdtemp()), patch)
-    with pytest.MonkeyPatch.context() as patch:
-        test_a_hip_finalize_hands_hipcc_the_kernel_link_flags_as_wl(Path(tempfile.mkdtemp()), patch)
-    for backend in sorted(BACKENDS):
-        with pytest.MonkeyPatch.context() as patch:
-            test_a_gpu_finalize_is_a_host_unit_and_a_device_unit_in_the_backends_dialect_linking_every_kernel(
-                Path(tempfile.mkdtemp()), patch, backend
-            )
-        with pytest.MonkeyPatch.context() as patch:
-            test_a_gpu_finalize_renders_and_builds_its_device_unit_in_dace_s_backend_not_the_bench_s(
-                Path(tempfile.mkdtemp()), patch, backend
-            )

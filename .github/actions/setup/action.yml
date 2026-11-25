@@ -1,0 +1,63 @@
+name: Set up tactics
+description: >-
+  Python, the apt toolchain, HPTT, the grading seal, tactics with its dev group, the emitted bench corpus, and the
+  OpenMP launch environment of the bench's judge.
+inputs:
+  bench-tip:
+    description: Pin the tip of the tracked bench branch (scripts/bump_deps.py) before installing.
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - uses: astral-sh/setup-uv@v6
+      with:
+        python-version: '3.12'
+        activate-environment: true
+        enable-cache: ${{ inputs.bench-tip != 'true' }}
+        cache-dependency-glob: pyproject.toml
+    - uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/apt-archives
+        key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
+    - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
+      shell: bash
+    - uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/hptt
+        key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
+    # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
+    - run: bash -o pipefail -c 'bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"'
+      shell: bash
+    # The bench's reference runs in its grading seal, which enters an unprivileged user namespace (ubuntu-24.04
+    # restricts that through AppArmor).
+    - name: Grading seal
+      shell: bash
+      run: |
+        knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+        if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
+    - name: Pin the tip of the tracked bench branch and the DaCe and relayout it pins
+      if: inputs.bench-tip == 'true'
+      shell: bash
+      run: python scripts/bump_deps.py && git diff pyproject.toml
+    - run: uv pip install -e . --group dev
+      shell: bash
+    # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm runner
+    # checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
+    - uses: actions/cache/restore@v4
+      id: emit-cache
+      with:
+        path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+        key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+    - name: Emit the bench corpus
+      shell: bash
+      run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
+    - if: steps.emit-cache.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
+        key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+    # The bench's references run only under the OpenMP launch environment its judge uses
+    # (hpcagent_bench.flags.openmp_launch_env), read once when numpy loads.
+    - name: OpenMP launch environment
+      shell: bash
+      run: python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print("\n".join(f"{k}={v}" for k, v in e().items()))' >> "$GITHUB_ENV"

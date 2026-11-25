@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``scripts/run_statistics.py`` turns the plugin records a results DB kept into one row per episode: calls and
 refusals by class, wasted attempts, and the tokens before and after the first ``write_kernel``, which add up."""
@@ -20,11 +20,13 @@ from tactics.paths import REPO_ROOT
 
 SCRIPT = REPO_ROOT / "scripts" / "run_statistics.py"
 KERNEL = "tsvc_2_s212"  # any real, fast-loading kernel
-SETUP = "nestforge-llr"
+SETUP = "tactics-llr"
 
 
-def call(index: int, tool: str, status: str, tokens: int, refusal: str = "", forced: bool = False) -> JsonValue:
-    return {"index": index, "tool": tool, "kind": None, "family": None, "status": status, "refusal": refusal,
+def call(
+    index: int, tool: str, status: str, tokens: int, refusal: str = "", forced: bool = False, kind: str | None = None
+) -> JsonValue:
+    return {"index": index, "tool": tool, "kind": kind, "family": None, "status": status, "refusal": refusal,
             "forced": forced, "phase": "moves", "tokens": tokens}  # fmt: skip
 
 
@@ -53,7 +55,7 @@ def test_two_episodes_give_two_rows_whose_token_split_adds_up(tmp_path: pathlib.
                    call(2, "write_kernel", "wrong", 700), call(3, "finalize", "ok", 1000)]  # fmt: skip
     for worker, calls, first_write in ((1, moves_only, None), (2, with_kernel, 1)):
         folder = tmp_path / f"w{worker}"
-        plugin_records.keep(folder, "nestforge", 1, record(calls, first_write))
+        plugin_records.keep(folder, "tactics", 1, record(calls, first_write))
         graded(db, folder, f"{SETUP}.n0.p1.w{worker}")
 
     subprocess.run([sys.executable, str(SCRIPT), str(db), "--setup", SETUP, "--out", str(out)], check=True)
@@ -73,10 +75,26 @@ def test_wrong_kernels_after_the_first_forced_move_are_counted_apart(tmp_path: p
              call(2, "write_kernel", "wrong", 30), call(3, "apply_move", "applied", 40, forced=True),
              call(4, "finalize", "ok", 50)]  # fmt: skip
     folder = tmp_path / "w1"
-    plugin_records.keep(folder, "nestforge", 1, record(calls, 0))
+    plugin_records.keep(folder, "tactics", 1, record(calls, 0))
     graded(db, folder, f"{SETUP}.n0.p1.w1")
 
     subprocess.run([sys.executable, str(SCRIPT), str(db), "--setup", SETUP, "--out", str(out)], check=True)
 
     (row,) = csv.DictReader(out.open())
     assert (row["forced"], row["wrong_results"], row["wrong_after_forced"]) == ("2", "2", "1")
+
+
+# Reproducer: a forced move a later rollback took back still counted as forced (run_statistics TODO, 0.1.1)
+def test_a_forced_move_a_rollback_took_back_is_not_counted(tmp_path: pathlib.Path) -> None:
+    db, out = tmp_path / "results.db", tmp_path / "stats.csv"
+    calls = [call(0, "apply_move", "applied", 10, forced=True), call(1, "apply_move", "applied", 20, kind="rollback"),
+             call(2, "apply_move", "applied", 30), call(3, "apply_move", "applied", 40, forced=True),
+             call(4, "finalize", "ok", 50)]  # fmt: skip
+    folder = tmp_path / "w1"
+    plugin_records.keep(folder, "tactics", 1, record(calls, 0))
+    graded(db, folder, f"{SETUP}.n0.p1.w1")
+
+    subprocess.run([sys.executable, str(SCRIPT), str(db), "--setup", SETUP, "--out", str(out)], check=True)
+
+    (row,) = csv.DictReader(out.open())
+    assert row["forced"] == "1", "only the forced move at index 3 stays"

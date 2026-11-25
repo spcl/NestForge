@@ -40,14 +40,14 @@ An unknown name refuses the session.
 A packet switches families off through its `env`, as the study's ablation does:
 
 ```toml
-[packets.nestforge-full-no-moves]
-extends = "nestforge-full"
+[packets.tactics-full-no-moves]
+extends = "tactics-full"
 agent = ["scopes", "kernels", "codegen"]
-env = { ..., NESTFORGE_DISABLED_FAMILIES = "all" }
+env = { ..., TACTICS_DISABLED_FAMILIES = "all" }
 ```
 
 The session lives in the judge's process, and a packet's `env` reaches only the agent's tools. The agent-side tool
-wrapper (`plugin/tactics/tools/nestforge.py`) therefore sends the variable as `disabled_families` with every call.
+wrapper (`plugin/tactics/tools/tactics.py`) therefore sends the variable as `disabled_families` with every call.
 The route fixes the value at the episode's first call, refuses a later call that names other families, and writes the
 families into the plugin record. The agent has no shell under the packet, and the field is not a tool argument.
 

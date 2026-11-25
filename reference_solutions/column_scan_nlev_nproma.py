@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Column scan, (NLEV, NPROMA) layout: the default stage 2, then one kernel around the whole step loop (stage 3,
 ``set_scope``), so each of the ``nsteps`` passes no longer launches a kernel of its own.

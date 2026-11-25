@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The kernel stage's GPU source on each DaCe GPU backend, chosen and not probed, rendered without a GPU or a GPU
 toolkit: a device unit with the ``__global__`` kernel and a host unit that launches it; a CPU kernel has neither."""
@@ -82,13 +82,3 @@ def test_a_cpu_kernel_renders_no_device_code(tmp_path: Path) -> None:
     text = kernel_text(src)
     assert src.device == "cpu" and src.device_unit is None and src.unit.suffix == ".cpp"
     assert "__global__" not in text and "LaunchKernel(" not in text and "__cpf_runkernel_" not in text
-
-
-if __name__ == "__main__":
-    import tempfile
-
-    for backend in sorted(DIALECTS):
-        test_a_gpu_kernel_renders_a_global_kernel_and_its_launch_in_the_backends_dialect(
-            Path(tempfile.mkdtemp()), backend
-        )
-    test_a_cpu_kernel_renders_no_device_code(Path(tempfile.mkdtemp()))

@@ -1,5 +1,5 @@
-# NestForge's prompt: what it does follows the intro of both prompts; the agent writes no code, so the build and
-# language guidance is off, and NestForge's own texts say how to send, recover and finish.
+# Tactics' prompt: what it does follows the intro of both prompts; the agent writes no code, so the build and
+# language guidance is off, and Tactics' own texts say how to send, recover and finish.
 agent:
   set:
     file_tools: {enabled: false}
@@ -13,7 +13,7 @@ agent:
     keep_improving: {text: "file:agent/keep_improving.md"}
   insert:
     - after: intro
-      block: {id: nestforge, text: "file:about.md"}
+      block: {id: tactics, text: "file:about.md"}
 task:
   set:
     build_flags: {enabled: false}
@@ -22,4 +22,4 @@ task:
     delivery: {text: "file:task/delivery.md"}
   insert:
     - after: intro
-      block: {id: nestforge, text: "file:about.md"}
+      block: {id: tactics, text: "file:about.md"}

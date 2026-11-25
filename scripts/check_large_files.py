@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Fail when a staged file exceeds ``--max-kb`` KiB, so build artifacts and datasets stay out of git.
 

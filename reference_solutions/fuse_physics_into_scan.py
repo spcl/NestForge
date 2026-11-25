@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Physics fused into a level scan, on the GPU: the default moves the level loop into one column map that computes
 ``p1`` and ``p2`` for every level and then scans; the ``doall-fission`` of that column map (the one writing ``s``)

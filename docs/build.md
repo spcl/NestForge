@@ -38,7 +38,7 @@ survive a fork, so `run_spawned` measures device kernels in a freshly spawned in
 
 ## Runtime libraries
 
-NestForge assumes Linux. Every link passes `-Wl,--as-needed`, and every library and program links the
+Tactics assumes Linux. Every link passes `-Wl,--as-needed`, and every library and program links the
 runtimes it needs by name instead of relying on the host process having them loaded.
 
 - **OpenMP.** LLVM libomp is the process's one runtime. It serves g++ code through its `GOMP_*` entry

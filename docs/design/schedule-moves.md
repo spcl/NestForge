@@ -2,7 +2,7 @@
 
 [Designs](README.md) · [Stages](../stages.md) · [Move families](../move-families.md)
 
-Status: steps 1 to 3 built (`for-to-doall` with `force`, `set-schedule-cpu`, `set-schedule-gpu`); step 4 built 2026-11-24 (DaCe extended `fb6dabf60d`: `guided` and a chunk for the GPU queue, offered by `set-schedule-gpu`). Written 2026-11-16 against NestForge `7a016a5` and DaCe extended `6ed7dc19e6`. The
+Status: steps 1 to 3 built (`for-to-doall` with `force`, `set-schedule-cpu`, `set-schedule-gpu`); step 4 built 2026-11-24 (DaCe extended `fb6dabf60d`: `guided` and a chunk for the GPU queue, offered by `set-schedule-gpu`). Written 2026-11-16 against Tactics `7a016a5` and DaCe extended `6ed7dc19e6`. The
 owner's decisions of 2026-11-16 are marked; everything marked "to verify" was not read in the code or run.
 
 ## Goal
@@ -32,7 +32,7 @@ the dependence.
    permissive mode, which waives conflicting writes (`out[perm[i]] = ...` with a permutation the compiler cannot
    see) and its first carried-read test; its memlet test of a read against another iteration's write still
    refuses, as do bounds the body changes and a symbol one iteration hands to the next. Permissive mode also lets a
-   body with a break, continue or return through, so NestForge refuses those first, and a loop that holds a call
+   body with a break, continue or return through, so Tactics refuses those first, and a loop that holds a call
    with an ordered side effect (class `communication`): canonicalization orders such calls through data, a
    conflict the permissive mode would waive.
 3. A forced move answers with a warning: the compiler did not prove the iterations independent, and a wrong
@@ -43,8 +43,8 @@ the dependence.
 Open: whether the study's `decide` configuration may force. A forced move is not a compiler-checked move, so the
 paper either switches forcing off in `decide` or reports forced moves apart. Open too: whether `force` should also
 waive a carried read (`A[p[i]] = A[q[i]]` with disjoint `p` and `q`). DaCe's permissive mode keeps that refusal on
-purpose (`tests/passes/scatter_to_guarded_maps_test.py` pins it), so this needs a separate knob on `LoopToMap` in
-DaCe extended, and then a bench pin bump, since the bench owns NestForge's DaCe pin.
+purpose (DaCe's `tests/passes/scatter_to_guarded_maps_test.py` pins it), so this needs a separate knob on `LoopToMap` in
+DaCe extended, and then a bench pin bump, since the bench owns Tactics' DaCe pin.
 
 ## `set-schedule-cpu`
 
@@ -60,9 +60,8 @@ code generator emits the clause. The move sets them on one doall of a scope plac
   Not yet refused: a doall in a persistent parallel region or with a private range, for which code generation
   drops the clause, and `dynamic` on a reduction where the task forbids reassociation.
 - `default` leaves the schedule to DaCe, whose `ChooseOmpSchedule` makes it `guided` for uneven bodies.
-- TODO(owner): the kernel build runs `DecideCpuParallelAxes` and `SplitInvariantMapNests`, which can hand the team
-  to an inner map and drop the clause from the doall the agent named. The pragma test reads the placed body's
-  code, not the built kernel's; a test through the build (`schedule_kernel`) needs a local or CI run.
+- The clause reaches the built kernel: `test_a_cpu_schedule_reaches_the_pragma_of_the_built_kernel` reads the
+  kernel's unit after the build (`DecideCpuParallelAxes`, `SplitInvariantMapNests`) and finds the pragma once.
 - Built as listed: the schedule shows as each listed move's `current` in `list_scope_moves` (`dynamic,16
   threads=4`), since a scope's body has no tree of its own; the program tree shows none.
 
@@ -99,9 +98,10 @@ finds there), so the choice cannot live in the body before placement. The sessio
 (`Session.gpu_choices`, part of the rollback checkpoint) and sets it on the placed body after every placement.
 `list_scope_moves` shows each row's choice as `current`. A structured move in the kernel checks every choice
 again and drops one its body no longer takes. `rewind` drops every choice, `unset_scope` those of its kernel.
-TODO(owner): a placement drops `stage-loads-shared` (any scope move re-places every kernel), so
-`set-schedule-gpu` is refused while a kernel holds staged loads, and staging is refused on a kernel with a GPU
-schedule; a device move that survives placement would lift both.
+The device moves (`stage-loads-shared`, `copy-to-tma`, `set-pipeline-depth`) are kept per kernel the same way
+(`Session.device_moves`) and made again on the placed body after every placement, so a later scope move keeps them;
+one the body no longer takes is dropped. Staging sets a thread block of its own, so `set-schedule-gpu` and staging
+refuse each other on the same kernel only.
 
 ## Later transformations
 

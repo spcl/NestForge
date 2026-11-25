@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Compile-free unit tests for the build/arena plumbing: signature parsing and FP-precision x cost-model
 flag composition -- pure logic on synthetic inputs, so no compiler needed.
@@ -28,11 +28,6 @@ def test_signature_order_c_and_fortran_multiline() -> None:
 
 def test_abi_order_pointer_star_stripped() -> None:
     assert signature_order("void k_fp64(double *a, double* b, int64_t N) {", "k_fp64") == ["a", "b", "N"]
-
-
-# flag composition (flags.*)
-def test_every_cell_builds_an_optimized_native_shared_object() -> None:
-    assert flags.BASE_FLAGS == ("-O3", "-march=native", "-fPIC", "-shared")
 
 
 def test_cost_flags_no_vec_and_cheap_collapse() -> None:

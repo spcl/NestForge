@@ -1,23 +1,38 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Every NestForge tool: its phase, its arguments and what the model is told. Pure pydantic, so the agent image
-(no DaCe, no NestForge) and the judge route read the same table."""
+"""Every Tactics tool: its phase, its arguments and what the model is told. Pure pydantic, so the agent image
+(no DaCe, no Tactics) and the judge route read the same table."""
 
 import enum
+from collections.abc import Collection
 from typing import Any, Literal, NamedTuple
 
 import pydantic
 
-__all__ = ["IDENTITY", "MOVE_DEFAULTS", "ROUTE", "TOOLS", "Args", "Effect", "NoArgs", "Phase", "ToolDef"]
+__all__ = [
+    "IDENTITY",
+    "MCP_PATH",
+    "MOVE_DEFAULTS",
+    "ROUTE",
+    "TOOLS",
+    "Args",
+    "Effect",
+    "NoArgs",
+    "Phase",
+    "ToolDef",
+    "mcp_tools",
+]
 
-#: The judge route every tool posts to, as ``/nestforge/<tool>``.
-ROUTE = "nestforge"
+#: The judge route every tool posts to, as ``/tactics/<tool>``.
+ROUTE = "tactics"
+#: The judge path, ``/tactics/mcp``, that serves the same tools over MCP (JSON-RPC in a POST body).
+MCP_PATH = "mcp"
 
 #: Body fields the transport adds to every request; never a tool argument.
 IDENTITY = frozenset({"kernel", "rank", "episode_id", "optimizer", "tokens", "disabled_families", "agent_phases"})
 #: The packet setting naming the phases its agent runs, comma-separated; unset, every phase. Like the families, a
 #: packet's ``env`` reaches only the agent's side, so every call carries it to the judge, which fixes it at the first.
-AGENT_PHASES_ENV = "NESTFORGE_AGENT_PHASES"
+AGENT_PHASES_ENV = "TACTICS_AGENT_PHASES"
 
 
 class Phase(enum.StrEnum):
@@ -452,7 +467,7 @@ TOOLS: dict[str, ToolDef] = {
     "run_defaults": ToolDef(
         phases(Phase.STRUCTURED, Phase.SCOPES),
         RunDefaults,
-        "Finish one stage with NestForge's default heuristic; call get_performance to time it.",
+        "Finish one stage with Tactics' default heuristic; call get_performance to time it.",
     ),
     "set_scope": ToolDef(
         phases(Phase.SCOPES),
@@ -517,3 +532,23 @@ TOOLS: dict[str, ToolDef] = {
 }
 
 ApplyMoves.model_rebuild()
+
+
+def mcp_tools(served: Collection[str]) -> list[dict[str, Any]]:
+    """The tools of ``served`` as MCP lists them: the input schema from the arguments' pydantic model, the hints from
+    the effect. Every call reaches only the caller's own session, so no tool is open-world."""
+    return [
+        {
+            "name": name,
+            "description": f"[{tool.label}] {tool.description}",
+            "inputSchema": tool.args.model_json_schema(),
+            "annotations": {
+                "readOnlyHint": tool.effect is Effect.READ,
+                "destructiveHint": tool.effect is Effect.REPLACE,
+                "idempotentHint": tool.effect is Effect.READ,
+                "openWorldHint": False,
+            },
+        }
+        for name, tool in TOOLS.items()
+        if name in served
+    ]

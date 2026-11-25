@@ -1,8 +1,8 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A session process that stops answering is ended after the call's timeout, one that died says so, and a measuring
 call stops when asked and leaves its session answering; it starts in the bench's llvm OpenMP context, whose libomp is
-the one runtime NestForge links."""
+the one runtime Tactics links."""
 
 import json
 import multiprocessing

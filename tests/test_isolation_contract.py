@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``run_isolated`` turns a crash, a hang or a malformed result of fresh generated code into a result the sweep can
 record, and the parent survives each one. The assertions read the returned model, since a dying child takes its
@@ -222,10 +222,11 @@ def test_a_child_keeps_its_callers_mask_when_libomp_is_initialized() -> None:
     assert cpus == [cpu]
 
 
+# Reproducer: timing child inherited libomp's one-core mask (#75)
 @needs_affinity
 def test_a_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one() -> None:
     """libomp binds the thread that starts it to the first place, often one CPU; a child given that mask would run
-    its whole team on one core and time the program tens of times slower (NestForge#75). In a spawned process, as
+    its whole team on one core and time the program tens of times slower (spcl/tactics#75). In a spawned process, as
     above."""
     with multiprocessing.get_context("spawn").Pool(1) as pool:
         full, bound, child = pool.apply(child_mask_after_openmp_bound_the_caller)
@@ -259,10 +260,11 @@ def in_fresh_process(target: Callable[..., None], *arguments: object) -> Any:  #
     return answer
 
 
+# Reproducer: spawned GPU session ran its CPU parts on one core (#99)
 @needs_affinity
 def test_a_spawned_child_runs_on_the_session_cores_when_openmp_bound_the_caller_to_one() -> None:
     """A spawned interpreter starts from its parent's mask; once libomp bound the parent to one core, a GPU
-    session's program would run its CPU parts there (NestForge#99)."""
+    session's program would run its CPU parts there (spcl/tactics#99)."""
     full, child = in_fresh_process(spawned_child_mask_after_openmp_bound_the_caller)
 
     assert len(full) >= 2, "one CPU: nothing for OpenMP to narrow"
@@ -290,10 +292,11 @@ def build_and_report_mappings(answers: Any, folder: str) -> None:
     answers.put((library.is_file(), sorted(mapped_libraries() - before), str(library)))
 
 
+# Reproducer: loading the timed program bound the caller to one core (#99)
 @needs_affinity
 def test_building_a_program_to_time_maps_neither_it_nor_an_openmp_runtime_into_the_caller(tmp_path: Path) -> None:
     """Loading the program maps libomp here, which with OMP_PROC_BIND or OMP_PLACES binds this process to one core
-    and every child it forks with it (NestForge#99); only the timing child may load it."""
+    and every child it forks with it (spcl/tactics#99); only the timing child may load it."""
     built, newly_mapped, library = in_fresh_process(build_and_report_mappings, str(tmp_path))
 
     assert built

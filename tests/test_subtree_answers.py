@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A move answers with the subtree it rewrote: the tree the agent holds, with that subtree and the rows around it put
 in, is the new tree, and a change inside one loop answers with less than the whole tree."""

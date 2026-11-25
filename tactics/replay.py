@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Replay a benchmark's reference solution: a Python script of stage 2 calls, run next to the default.
 
@@ -53,8 +53,8 @@ DATATYPE = "float64"
 REPLAY_DIR = REPO_ROOT / "experiments" / "replay"
 #: Thread placement of every timed run, as the benchmark records were measured.
 OMP_PLACEMENT = {"OMP_PROC_BIND": "close", "OMP_PLACES": "cores"}
-#: Overrides the NestForge commit a record names, for a tree copied without its ``.git``.
-COMMIT_ENV = "NESTFORGE_COMMIT"
+#: Overrides the Tactics commit a record names, for a tree copied without its ``.git``.
+COMMIT_ENV = "TACTICS_COMMIT"
 #: Spaces per level of a written record.
 JSON_INDENT = 2
 #: Fields of a ``--config`` spelling: device, threads, preset.
@@ -111,11 +111,12 @@ class AppliedMove(Record):
     operation: dict[str, object] = {}
     isa: str = DEFAULT_ISA
     force: bool = False
-    # TODO(owner): Script.apply passes no scope, so the set-schedule moves (scope only) cannot replay yet
     schedule: str | None = None
     chunk: int | None = None
     threads: int | None = None
     container: str | None = None
+    #: The kernel whose body the move rewrites (``set-schedule-*`` take one); ``None`` for the program.
+    scope: str | None = None
 
 
 #: The fields of a listed move a script passes on to ``apply_move``: every :class:`AppliedMove` argument.
@@ -169,14 +170,15 @@ class Script:
         reads: Iterable[str] = (),
         writes: Iterable[str] = (),
         where: Callable[[Sequence[Row]], bool] | None = None,
+        scope: str | None = None,
     ) -> Move:
         """The one legal move of ``kind`` whose rows read ``reads`` and write ``writes`` (all of them) and satisfy
-        ``where``.
+        ``where``; with ``scope``, a move inside that kernel's body (``set-schedule-*``).
 
         :raises ReplayError: No move or several moves match; the message lists what is offered and the tree.
         """
-        rows = self.session.row_index()
-        offered = self.session.list_moves(kind)
+        rows = self.session.move_rows(kind, scope)
+        offered = self.session.list_moves(kind, scope)
         hits = [m for m in offered if move_matches([rows[label] for label in m.labels], reads, writes, where)]
         if len(hits) == 1:
             return hits[0]
@@ -187,11 +189,12 @@ class Script:
             + self.session.describe()
         )
 
-    def apply(self, move: Move) -> AppliedMove:
-        """Apply ``move``; raises :class:`ReplayError` unless it applied."""
-        if self.finished:
+    def apply(self, move: Move, *, scope: str | None = None) -> AppliedMove:
+        """Apply ``move``, inside kernel ``scope`` when :meth:`pick` took it from there; raises :class:`ReplayError`
+        unless it applied. A move inside a kernel follows the scopes, so it applies after :meth:`finish` too."""
+        if self.finished and scope is None:
             raise ReplayError(f"{move.kind} after finish(): stage 2 is closed")
-        arguments = move.model_dump(include=REPLAYED)
+        arguments = {**move.model_dump(include=REPLAYED), "scope": scope}
         result = self.session.apply_move(**arguments)
         if result.status is not MoveStatus.APPLIED:
             raise ReplayError(f"{move.kind} {list(move.labels)}: {result.status.name.lower()}: {result.reason}")
@@ -259,7 +262,7 @@ class Solution:
 def load_solution(path: Path) -> Solution:
     """Import a solution script: ``KERNEL``, ``CONFIGS``, ``solve``, optional ``CI_SKIP``. Loaded by
     file path, as :meth:`CorpusKernel.module` loads a ``_dace.py``: a benchmark folder is not a package."""
-    spec = importlib.util.spec_from_file_location(f"nestforge_solution_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(f"tactics_solution_{path.stem}", path)
     if spec is None or spec.loader is None:
         raise ImportError(f"{path} is not importable")
     module = importlib.util.module_from_spec(spec)
@@ -366,7 +369,7 @@ def distribution_commit(name: str) -> str:
     return commit or dist.version
 
 
-def nestforge_commit() -> str:
+def tactics_commit() -> str:
     if os.environ.get(COMMIT_ENV):
         return os.environ[COMMIT_ENV]
     try:
@@ -381,7 +384,7 @@ def nestforge_commit() -> str:
 
 def pins() -> dict[str, str]:
     return {
-        "nestforge": nestforge_commit(),
+        "tactics": tactics_commit(),
         "dace": distribution_commit("dace"),
         "hpcagent_bench": distribution_commit("hpcagent_bench"),
     }
@@ -492,7 +495,7 @@ def splice(document: str, kernel: str, section: str) -> str:
 def openmp_env(ctx: Context) -> dict[str, str]:
     """The OpenMP variables ``ctx`` runs under: the thread count and placement, and the launch environment the bench
     oracle refuses to run without (:func:`hpcagent_bench.flags.openmp_launch_env`)."""
-    # deferred like every hpcagent_bench import, so importing nestforge never loads it
+    # deferred like every hpcagent_bench import, so importing tactics never loads it
     from hpcagent_bench.flags import openmp_launch_env
 
     return {**openmp_launch_env(), "OMP_NUM_THREADS": str(ctx.threads), **OMP_PLACEMENT}

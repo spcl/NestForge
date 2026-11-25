@@ -1,7 +1,7 @@
 ---
-name: nestforge
-description: "How to read the NestForge tree (for and while loops, doalls, library calls) and pick the moves that rewrite it: fusion, fission, interchange, tiling, hoisting, library calls, layouts, vectorization, schedules; with the full tool set, also scopes and kernel code. Read it whenever NestForge tools are in your tool list, even if you only plan to call finalize."
-when: "you drive the NestForge tools: read this before your first view_tree or apply_move."
+name: tactics
+description: "How to read the Tactics tree (for and while loops, doalls, library calls) and pick the moves that rewrite it: fusion, fission, interchange, tiling, hoisting, library calls, layouts, vectorization, schedules; with the full tool set, also scopes and kernel code. Read it whenever Tactics tools are in your tool list, even if you only plan to call finalize."
+when: "you drive the Tactics tools: read this before your first view_tree or apply_move."
 applies: {explicit: true}
 ---
 

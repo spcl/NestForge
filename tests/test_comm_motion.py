@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Communication rows move under their own rules (``docs/design/comm-nodes.md``, section 3): a fixed row stays (R4),
 a row keeps its region (R2) and a state of its own (no ``lib-into``), a row that starts communication never overtakes

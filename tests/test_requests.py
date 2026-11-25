@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``request_transformation``: an agent names a transformation no move offers, with pairs of small programs before
 and after it. The request is checked, kept, and changes nothing in the program."""

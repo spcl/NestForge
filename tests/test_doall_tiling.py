@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Doall tiling moves: tile a doall at the agent's sizes and untile it back, collapse nested doalls into one
 parallel space and expand it again; each leaves a program that computes the same."""
@@ -116,18 +116,3 @@ def test_an_expanded_doall_collapses_back_into_one_parallel_space(tmp_path: Path
     assert collapsed.status is MoveStatus.APPLIED, collapsed
     assert [len(params) for params in maps(sut)] == [2]
     computes_scale_add(sut)
-
-
-if __name__ == "__main__":
-    import pathlib
-    import tempfile
-
-    for test in (
-        test_a_doall_offers_tiling_and_expansion,
-        test_a_tiled_doall_steps_over_tiles_and_untiling_restores_one_doall,
-        test_tile_sizes_must_name_every_dimension,
-        test_tile_sizes_of_one_everywhere_tile_nothing_and_are_refused,
-        test_a_listed_tiling_applies_as_listed,
-        test_an_expanded_doall_collapses_back_into_one_parallel_space,
-    ):
-        test(pathlib.Path(tempfile.mkdtemp()))

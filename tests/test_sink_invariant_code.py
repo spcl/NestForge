@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Tests for ``sink_into_loop`` and ``sink_into_map``: the statements that compute a named temporary before a loop or
 map move into it, and run once per iteration."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Bellman-Ford on the GPU: the default's fusions, then the one ``doall-fission`` it leaves, then the stages after
 fusion. On the CPU the default leaves no move, so the reference is the default there."""

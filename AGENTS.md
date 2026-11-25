@@ -1,12 +1,12 @@
 # AGENTS.md
 
-Guide for LLM agents that drive NestForge and for coding agents that change it. Stage details live in
-[docs/stages.md](docs/stages.md); agents reach NestForge through the bench plugin in [plugin/tactics](plugin/tactics).
+Guide for LLM agents that drive Tactics and for coding agents that change it. Stage details live in
+[docs/stages.md](docs/stages.md); agents reach Tactics through the bench plugin in [plugin/tactics](plugin/tactics).
 
-## Driving NestForge
+## Driving Tactics
 
 The bench plugin's tools are listed in the [README](README.md#agents-the-hpcagent-bench-plugin); the
-[skill page](plugin/tactics/skills/nestforge/SKILL.md) and [prompt texts](plugin/tactics/prompt/) are what the agent reads.
+[skill page](plugin/tactics/skills/tactics/SKILL.md) and [prompt texts](plugin/tactics/prompt/) are what the agent reads.
 
 - Never edit SDFG nodes or memlets; request moves. Each move is checked for legality before it applies.
 - Name rows by the labels the tree prints, unique across the program. A row keeps its label while it lives; a move
@@ -15,10 +15,10 @@ The bench plugin's tools are listed in the [README](README.md#agents-the-hpcagen
 - When no move fuses two regions that should run as one, `set_scope` makes them one kernel; `unset_scope` undoes it.
 - Keep a change when the whole-program time drops and the program stays correct: wrong and fast loses.
 
-## Changing NestForge
+## Changing Tactics
 
 - Setup, tests and pins: see the [README](README.md#install-and-test). Bump the pins whenever DaCe extended gains a
-  transformation or fix NestForge needs.
+  transformation or fix Tactics needs.
 - `pre-commit run --all-files` runs ruff check and ruff format (120 columns) and the header check, as CI does.
 - Python is written as if statically typed: annotate everything, one name keeps one type, absolute imports, no
   leading-underscore names.
@@ -34,3 +34,6 @@ The bench plugin's tools are listed in the [README](README.md#agents-the-hpcagen
 - Reuse DaCe (canonicalize, transformations, CPF codegen, analyses) before writing anything new.
 - Comments short; docstrings with `:param:` only on public functions. Docs stay brief, one page per concept.
 - Every bug fix gets a test. Tests assert structure as well as values; a failing test is fixed, never weakened.
+- A bug's test carries `# Reproducer: <what broke, where> (<issue, kernel, job or commit>)` on the line above its
+  `def` (or its decorators). Test pruning never deletes a tagged test.
+- Tests run through pytest only: no `if __name__ == "__main__":` runners in test files.

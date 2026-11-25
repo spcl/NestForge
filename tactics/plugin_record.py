@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The plugin record of an episode (``docs/plugin-record.md``): its shape, written by the judge route for an agent and
 by the tuner columns for themselves. No bench import: each writer passes the bench's own ``keep``."""
@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 #: The record's file name in the episode's ``plugin_records`` folder, and the schema version of its shape.
-PLUGIN = "nestforge"
+PLUGIN = "tactics"
 #: 2 (2026-11-23): the same shape, but a journal's labels follow labels that only grow: after ``rewind`` a label the
 #: kernel phase handed out is never handed out again. A version-1 journal replays with
 #: ``Session.reissue_dropped_labels``.

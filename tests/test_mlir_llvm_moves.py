@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The MLIR and LLVM agent (docs/design/mlir-llvm-agent.md): compiler passes applied one at a time as named moves,
 with the loops after each move; a move that changes nothing or fails is refused, and rollback takes a move back."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Move families: every move kind is in exactly one, and a run that switches a family off is offered none of its
 moves, is refused each with the family's name, and runs none of them by default."""

@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""``POST /nestforge/<tool>``: the judge half of every NestForge tool. Each episode's kernel is served by its own
+"""``POST /tactics/<tool>``: the judge half of every Tactics tool. Each episode's kernel is served by its own
 session process (:mod:`tactics.server`), so the judge's threads never fork and a crash ends that process only.
 A tool in the wire table that the session does not serve answers 501. A session that cannot start is the judge's fault
 (500, :data:`JUDGE_FAULT_CAUSE`); 400 is the agent's own call, one that crashed its session included; 503 is a call
@@ -12,7 +12,7 @@ import contextlib
 import json
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from http import HTTPMethod, HTTPStatus
 from pathlib import Path
 from typing import Any
@@ -33,7 +33,8 @@ from hpcagent_bench.plugin_api import (
     keep_record,
     route,
 )
-from hpcagent_bench_plugins.nestforge.wire import IDENTITY, ROUTE, TOOLS
+from hpcagent_bench_plugins.tactics.mcp_endpoint import Outcome, mcp_answer
+from hpcagent_bench_plugins.tactics.wire import IDENTITY, MCP_PATH, ROUTE, TOOLS
 
 from tactics.plugin_record import PLUGIN, SCHEMA, episode_record, journal_entry, keep_capped
 from tactics.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied, move_text
@@ -86,7 +87,7 @@ def episode_of(episode_id: str) -> Episode:
 def journal_file(episode_id: str, kernel: str, log: str = "journal") -> Path:
     """Where the journal of ``kernel`` lives (or its ``log``, ``calls``): beside its library. The folder may be shared,
     so the name says whose."""
-    return agent_root(episode_id) / "nestforge" / f"{log}-{quote(f'{episode_id}@{kernel}', safe='')}.jsonl"
+    return agent_root(episode_id) / "tactics" / f"{log}-{quote(f'{episode_id}@{kernel}', safe='')}.jsonl"
 
 
 def journal_of(episode_id: str, kernel: str) -> list[Call]:
@@ -139,7 +140,7 @@ def log_call(episode_id: str, kernel: str, entry: dict[str, Any]) -> None:
         with file.open("a", encoding="utf-8") as log:
             log.write(json.dumps({"index": index, **entry}) + "\n")
     except OSError as err:
-        print(f"nestforge: call {entry['tool']} not logged: {err}", file=sys.stderr)
+        print(f"tactics: call {entry['tool']} not logged: {err}", file=sys.stderr)
 
 
 def keep_episode_record(episode_id: str, kernel: str, final: object, families: tuple[str, ...]) -> None:
@@ -156,7 +157,7 @@ def keep_episode_record(episode_id: str, kernel: str, final: object, families: t
         )
         keep_capped(lambda record: keep_record(agent_root(episode_id), PLUGIN, SCHEMA, record), data)
     except (LookupError, OSError, ValueError) as err:
-        print(f"nestforge: the plugin record of {episode_id} was not written: {err}", file=sys.stderr)
+        print(f"tactics: the plugin record of {episode_id} was not written: {err}", file=sys.stderr)
 
 
 def fix_families(episode: Episode, sent: object) -> str | None:
@@ -320,7 +321,7 @@ def crashed(call: Call, reply: Reply) -> Reply:
 def run_call(
     episode: Episode,
     judge: Judge,
-    request: RouteRequest,
+    episode_id: str,
     kernel: str,
     call: Call,
     gone: threading.Event,
@@ -334,7 +335,7 @@ def run_call(
         orphan = episode.orphans.pop(kernel, None)
         if orphan is not None and orphan[0] == call:
             return orphan[1]
-    session = session_of(episode, judge, kernel, request.episode_id, gone, slot)
+    session = session_of(episode, judge, kernel, episode_id, gone, slot)
     reply = session.call(name, arguments, gone, slot=slot)
     if not session.alive:
         # The call's change is not journaled, so the next session is the program before it.
@@ -345,11 +346,11 @@ def run_call(
         and isinstance(reply.result, RequestResult)
         and reply.result.status == "recorded"
     ):
-        record_request(request.episode_id, kernel, arguments)
+        record_request(episode_id, kernel, arguments)
     if name in CHANGING and not reply.error:
         for repeat in repeats_of(call, reply) if applied(reply) else []:
             try:
-                record(request.episode_id, kernel, repeat)
+                record(episode_id, kernel, repeat)
             except OSError as err:
                 # Unrecorded, the change would vanish with this session: it goes now, and the agent is told.
                 session.close()
@@ -360,58 +361,65 @@ def run_call(
     return reply
 
 
-def answer(judge: Judge, name: str, reply: Reply) -> None:
+def answer(name: str, reply: Reply) -> tuple[int, JudgeAnswer]:
     if reply.ended:
         error = f"{name}: {reply.error}; your moves are kept: the next call repeats them in a fresh session"
-        return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))
+        return HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE)
     if reply.stopped:
-        return judge.reply(HTTPStatus.SERVICE_UNAVAILABLE, JudgeError(error=reply.error))
+        return HTTPStatus.SERVICE_UNAVAILABLE, JudgeError(error=reply.error)
     if reply.error:
-        return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {reply.error}"))
-    return judge.reply(HTTPStatus.OK, ToolAnswer(tool=name, result=reply.result, performance=reply.performance))
+        return HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {reply.error}")
+    return HTTPStatus.OK, ToolAnswer(tool=name, result=reply.result, performance=reply.performance)
 
 
-@route(ROUTE, methods=(HTTPMethod.POST,))
-def serve(judge: Judge, request: RouteRequest) -> None:
-    name = request.parts[1] if len(request.parts) > 1 else ""
+def outcome(judge: Judge, name: str, body: Mapping[str, object], episode_id: str, terminal: bool) -> Outcome:
+    """The answer to the tool ``name`` called with ``body`` (its arguments and the identity fields) for the episode."""
     entry = TOOLS.get(name)
     if entry is None:
-        error = f"no NestForge tool {name!r}; tools: {sorted(TOOLS)}"
-        return judge.reply(HTTPStatus.NOT_FOUND, JudgeError(error=error))
+        return HTTPStatus.NOT_FOUND, JudgeError(error=f"no tactics tool {name!r}; tools: {sorted(TOOLS)}")
     if name not in CALLS:
         error = f"{name} ({entry.label} phase) is not implemented yet; this run serves {sorted(CALLS)}"
-        return judge.reply(HTTPStatus.NOT_IMPLEMENTED, JudgeError(error=error, cause="not-implemented"))
-    kernel = str(request.body.get("kernel") or "")
-    tokens = request.body.get("tokens")
+        return HTTPStatus.NOT_IMPLEMENTED, JudgeError(error=error, cause="not-implemented")
+    kernel = str(body.get("kernel") or "")
+    tokens = body.get("tokens")
     try:
-        args = entry.args.model_validate({k: v for k, v in request.body.items() if k not in IDENTITY})
+        args = entry.args.model_validate({k: v for k, v in body.items() if k not in IDENTITY})
     except pydantic.ValidationError as err:
-        log_call(request.episode_id, kernel, call_entry(name, dict(request.body), Reply(error=str(err)), tokens))
-        return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}"))
-    episode = episode_of(request.episode_id)
-    refused = fix_families(episode, request.body.get("disabled_families")) or fix_phases(
-        episode, request.body.get("agent_phases")
-    )
+        log_call(episode_id, kernel, call_entry(name, dict(body), Reply(error=str(err)), tokens))
+        return HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {err}")
+    episode = episode_of(episode_id)
+    refused = fix_families(episode, body.get("disabled_families")) or fix_phases(episode, body.get("agent_phases"))
     if refused is not None:
-        log_call(request.episode_id, kernel, call_entry(name, args.model_dump(), Reply(error=refused), tokens))
-        return judge.reply(HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {refused}"))
+        log_call(episode_id, kernel, call_entry(name, args.model_dump(), Reply(error=refused), tokens))
+        return HTTPStatus.BAD_REQUEST, JudgeError(error=f"{name}: {refused}")
     # The slot first: a call waiting for a slot blocks nothing of its own episode. Only what builds or runs code takes
     # one; a read or a move answers while other agents measure.
-    measuring = holds_device(episode, kernel, name, request.episode_id)
-    terminal = bool(request.query.get("terminal"))
+    measuring = holds_device(episode, kernel, name, episode_id)
     with judge.client_left() as gone, device_slot(judge, episode, gone, terminal) if measuring else NO_SLOT as slot:
         if slot is None or not locked(episode.lock, gone):
             return None
         held = slot if isinstance(slot, DeviceSlot) else None
         try:
-            reply = run_call(episode, judge, request, kernel, (name, args.model_dump()), gone, held)
+            reply = run_call(episode, judge, episode_id, kernel, (name, args.model_dump()), gone, held)
             # under the episode's lock, so the log's indices follow the order the calls ran in
-            log_call(request.episode_id, kernel, call_entry(name, args.model_dump(), reply, tokens))
+            log_call(episode_id, kernel, call_entry(name, args.model_dump(), reply, tokens))
             if name == "finalize" and not reply.error:
-                keep_episode_record(request.episode_id, kernel, reply.result, episode.families or ())
+                keep_episode_record(episode_id, kernel, reply.result, episode.families or ())
         except LookupError as err:
             error = f"{name}: the session could not start: {err}"
-            return judge.reply(HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE))
+            return HTTPStatus.INTERNAL_SERVER_ERROR, JudgeError(error=error, cause=JUDGE_FAULT_CAUSE)
         finally:
             episode.lock.release()
-        return answer(judge, name, reply)
+        return answer(name, reply)
+
+
+@route(ROUTE, methods=(HTTPMethod.POST,))
+def serve(judge: Judge, request: RouteRequest) -> None:
+    """``POST /tactics/<tool>``: one tool call; ``POST /tactics/mcp``: the same tools over MCP (:mod:`.mcp`)."""
+    name = request.parts[1] if len(request.parts) > 1 else ""
+    if name == MCP_PATH:
+        done = mcp_answer(judge, request, outcome)
+    else:
+        done = outcome(judge, name, request.body, request.episode_id, bool(request.query.get("terminal")))
+    if done is not None:
+        judge.reply(*done)

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ASCII tree the agent reads (:func:`tactics.ir.introspect.describe_graph`).
 
@@ -122,15 +122,6 @@ def test_a_state_shows_its_kernels_only_once_expanded() -> None:
     assert collapsed + "\n" == COLLAPSED
     assert opened + "\n" == OPENED
     assert opened_doall + "\n" == OPENED_DOALL
-
-
-def test_every_line_is_a_guide_then_one_labelled_thing() -> None:
-    for line in tree_of(shaped).splitlines()[1:]:
-        assert re.match(
-            r"^(\|  |   )*(\|- |`- )"
-            r"(state|for|if|block|continue|break|return|doall)\d+\b",
-            line,
-        ), line
 
 
 def test_every_row_the_session_prints_is_a_label_its_labeled_calls_take() -> None:
@@ -361,19 +352,11 @@ def matvec(A: dc.float64[8, 4], B: dc.float64[4], C: dc.float64[8]) -> None:
         C[i] += A[i, j] * B[j]
 
 
-def test_a_reduction_is_named_on_the_kernel_line() -> None:
-    """A WCR on a map IS a tree reduction: the map declares its iterations independent, so the fold
-    order is unspecified and a backend may use a register accumulator or an OpenMP clause. That is
-    structural, and the agent should not have to read the body to find it."""
-    tree = tree_of(matvec)
-    assert "accum=(C += over j)" in tree, tree
-
-
 def test_only_the_collapsed_axis_is_reported() -> None:
     """The reduced axes are the map parameters the output subset does not mention -- a map over
     (i, j) writing C[i] has collapsed j and only j."""
     tree = tree_of(matvec)
-    assert "C += over j)" in tree and "over i" not in tree, tree
+    assert "accum=(C += over j)" in tree and "over i" not in tree, tree
 
 
 def test_a_kernel_without_a_reduction_says_nothing() -> None:

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 7: the rule table that turns validation, times and compiler remarks into a few
 hints, most important first, and the report a session builds from real builds."""
@@ -114,6 +114,7 @@ def test_a_healthy_kernel_gets_no_hint() -> None:
     assert report([evidence()]).splitlines()[1] == "no hints: every kernel is correct and nothing stands out."
 
 
+# Reproducer: feedback lost the row label of a split kernel (#88)
 def test_a_kernel_cut_from_a_row_is_named_by_its_label_with_the_moves_offered_on_it() -> None:
     """Issue #88: the agent reads one line per row in its own words, the hottest first; a split piece keeps its
     row's label and a kernel no row names gets no line."""
@@ -162,6 +163,7 @@ def test_get_performance_names_the_row_a_kernel_came_from(tmp_path: Path) -> Non
     assert f"{label} is 100% of kernel time, map; moves offered on it: {', '.join(offered) or 'none'}." in hints
 
 
+# Reproducer: feedback did not name the row a move broke (#88 item 2)
 def test_a_failed_kernel_names_its_row_and_the_change_that_came_last() -> None:
     """Issue #88 item 2: after expanding only lib_blas0, the agent reads which move broke which row."""
     gemv = Origin("lib_blas0", "opaque library call (Gemv)", ("inline-library",))

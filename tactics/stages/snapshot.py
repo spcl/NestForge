@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ``snapshot-reads`` move: a doall that reads a slice of an array which another doall of the same state writes
 (``outer = path[:, k] + path[k, :]`` beside ``path = min(path, outer)``) first copies the slice into a transient, so

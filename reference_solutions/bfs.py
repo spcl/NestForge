@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Breadth-first search on the GPU: the default's fusions, then the ``interchange-doall-for`` it leaves on ``reach``,
 then the stages after fusion. On the GPU the default moves the source-vertex loop of ``frontier @ graph`` inside the

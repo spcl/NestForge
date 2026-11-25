@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A kernel reading a constant of the program (cloudsc's ``zvqx``, read in its loop over the species) is checked
 against an oracle that knows the constant's value: the kernel's C source fixes it, so it is no argument of either."""

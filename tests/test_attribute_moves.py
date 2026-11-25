@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``scripts/attribute_moves.py`` replays a journal one call at a time and names each call's family; it stops at the
 first written kernel, whose source the record keeps only as a hash."""

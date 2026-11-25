@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Assembly: the program in the bench C ABI, its kernels linked from their own archives, built into the ``.so`` a
 library submission (``source_mode any``) hands the judge. Each kernel keeps the compiler and flags it was built with."""

@@ -1,10 +1,10 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A kernel's outputs graded against its NumPy oracle as HPCAgent-Bench grades a program's (``grade_outputs``): the
 bench's comparator (``frameworks.utilities.compare_arrays``) at the band of each output's precision, with the
 reassociation floor ``eps_acc * sqrt(l)`` at the output's accumulation length (:mod:`tactics.ir.accumulation`) and
 the bench's grading knobs (``grading.fp_checks``: ``strict_small_l2``, ``strict_small_sign``, ``relative_atol``). The bench grades only program outputs,
-against its own reference; a kernel has neither, so NestForge supplies the oracle and ``l`` and the bench the rule.
+against its own reference; a kernel has neither, so Tactics supplies the oracle and ``l`` and the bench the rule.
 
 The bench is imported inside the functions: importing tactics never loads it."""
 

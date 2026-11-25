@@ -1,7 +1,7 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A kernel graded against its oracle by HPCAgent-Bench's rule (``tactics.build.grading``): a correct kernel that
-reorders a long reduction passes, as the bench would pass it; a wrong one still fails. NestForge's old gate (rtol
+reorders a long reduction passes, as the bench would pass it; a wrong one still fails. Tactics' old gate (rtol
 1e-14 per FP mode) failed the first: a reordered fp64 sum of 1e6 terms drifts past 1e-14."""
 
 import numpy as np
@@ -17,7 +17,7 @@ LONG = 1_000_000
 #: The parts a parallel reduction splits its sum into.
 CHUNKS = 64
 
-#: NestForge's old strict-ieee gate, which a correct reordered reduction failed.
+#: Tactics' old strict-ieee gate, which a correct reordered reduction failed.
 OLD_STRICT_RTOL = 1e-14
 
 #: A relative error far outside the fp64 band (rtol 1e-9): a wrong result, not rounding.

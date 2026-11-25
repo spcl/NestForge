@@ -29,7 +29,7 @@ must fit the threads resident on the device at once. That is a trade-off the age
   per-launch loop. A size it cannot bound leaves the loop alone. On the CPU one OpenMP team runs the whole loop.
 - The megakernel passes (chains, gather kernels, grid-stride loops, grid barriers, thread ownership), the grid `Sync`
   node, cooperative launches.
-- Not in canonicalization; it stays out of NestForge's defaults too (the move is the agent's choice).
+- Not in canonicalization; it stays out of Tactics' defaults too (the move is the agent's choice).
 
 ## The move
 
@@ -56,6 +56,6 @@ must fit the threads resident on the device at once. That is a trade-off the age
 
 ## Build order
 
-1. DaCe: `mk-1117` on extended, then the bench's DaCe pin, then NestForge's.
+1. DaCe: `mk-1117` on extended, then the bench's DaCe pin, then Tactics'.
 2. The move, its tree text, its refusals, tests 1 to 4.
 3. Test 5 on beverin.

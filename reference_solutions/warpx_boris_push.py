@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """WarpX Boris momentum pusher: fuse the maps of the step loop (``doall-fusion``), move the loop inside one particle
 map (``interchange-for-doall``), then the default stage 2 on top.

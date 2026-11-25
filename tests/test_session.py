@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session: labels that stay on their rows and retire with them, kernels named by name, and plain JSON-able results. The wrapped
 stages have their own tests."""
@@ -154,8 +154,9 @@ def test_metrics_answers_for_a_map_a_kernel_and_refuses_an_unknown_label() -> No
     assert s.metrics("nothing_0") == "no tree row is labeled nothing_0."
 
 
+# Reproducer: a work-depth error lost the tree and the move (#28)
 def test_describe_prints_the_tree_without_costs_when_work_depth_fails(monkeypatch: pytest.MonkeyPatch) -> None:
-    # spcl/NestForge#28: DaCe's work-depth pass raises on some programs; the tree, and the move, must still come back
+    # spcl/tactics#28: DaCe's work-depth pass raises on some programs; the tree, and the move, must still come back
     def fail(*args: object, **kwargs: object) -> Never:
         raise RecursionError("maximum recursion depth exceeded")
 

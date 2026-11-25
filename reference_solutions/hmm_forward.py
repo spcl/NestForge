@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """HMM forward algorithm on the CPU: each time step is ``alpha @ trans`` and ``sum(alpha)``, two library calls the
 default keeps inside the time loop. ``inline-library`` of both (the product into a doall over states with an inner

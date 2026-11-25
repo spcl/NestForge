@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Read-only views of a program: the structure tree (:func:`describe_graph`), a kernel as Python, and the arrays a
 nest reads and writes."""

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tactics"
-version = "0.1.0"
+version = "0.1.1"
 description = "Reproducible transformation-based agents and a harness for DaCe: tactics applied as legal moves, replayed as recipes."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -33,7 +33,12 @@ dependencies = [
     # (hpcagent-agent, built from the same repository).
     "hpcagent-bench>=1.0.0",
     "dace-relayout>=0.1.2",
+    # tactics.mcp_server: the tools as an MCP server (the low-level Server of the 2.x SDK).
+    "mcp>=2.3",
 ]
+
+[project.scripts]
+tactics-mcp = "tactics.mcp_server:main"
 
 [project.optional-dependencies]
 # The relayout move's SDFG cast needs FP-Arena (DaCe extended comes with tactics itself).

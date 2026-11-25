@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 2: fusion, fission and interchange moves on the tree rows labels name, judged and applied by DaCe's own
 transformations, and the symbolic work and depth of a scope."""
@@ -197,7 +197,7 @@ GPU_INNER_SCHEDULES = {
 }
 #: The schedules of ``set-schedule-gpu`` that run a shared queue and take a ``chunk``.
 GPU_QUEUE_SCHEDULES = ("dynamic", "guided")
-#: The most threads a block has on every GPU NestForge targets.
+#: The most threads a block has on every GPU Tactics targets.
 MAX_BLOCK_THREADS = 1024
 #: The move kinds that work only inside a kernel (a scope): a schedule belongs to the device it is placed on.
 SCOPE_KINDS = frozenset({SET_SCHEDULE_CPU, SET_SCHEDULE_GPU})
@@ -1065,9 +1065,7 @@ def plan_loop_if(loop_row: Row) -> Rewrite | str:
 def plan_inline_library(row: Row) -> Rewrite | str:
     node, state = cast(nodes.LibraryNode, row[0]), node_state(row)
     if isinstance(node, ExternalCall):
-        return Refused(
-            f"{node.label} is a kernel NestForge built (a scope), not a library call.", Refusal.WRONG_ROW_KIND
-        )
+        return Refused(f"{node.label} is a kernel Tactics built (a scope), not a library call.", Refusal.WRONG_ROW_KIND)
     if comm_class(node) is not None:
         return Refused(
             f"{node.label} communicates: code generation expands it at finalize, so it stays a library call.",
@@ -1086,9 +1084,7 @@ def plan_inline_library(row: Row) -> Rewrite | str:
 def plan_set_implementation(row: Row, implementation: str | None = None) -> Rewrite | str:
     node = cast(nodes.LibraryNode, row[0])
     if isinstance(node, ExternalCall):
-        return Refused(
-            f"{node.label} is a kernel NestForge built (a scope), not a library call.", Refusal.WRONG_ROW_KIND
-        )
+        return Refused(f"{node.label} is a kernel Tactics built (a scope), not a library call.", Refusal.WRONG_ROW_KIND)
     if implementation is None:
         return Refused(f"pass implementation, one of {sorted(node.implementations)}.", Refusal.ARGUMENT)
     if implementation not in node.implementations:
@@ -2732,7 +2728,7 @@ def legal_moves(sdfg: dace.SDFG, kind: str | None = None, target: str = "cpu") -
             try:
                 probe = plan_move(name, rows, probe_sizes(name, rows), probe_implementation(name, rows), target=target)
             except CRASHES as err:  # a check that raises on one candidate hides only that candidate
-                print(f"nestforge: {name} {list(labels)} is not listed: {type(err).__name__}: {err}", file=sys.stderr)
+                print(f"tactics: {name} {list(labels)} is not listed: {type(err).__name__}: {err}", file=sys.stderr)
                 continue
             if isinstance(probe, Rewrite):
                 found[(name, labels)] = None

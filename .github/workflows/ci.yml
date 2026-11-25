@@ -2,14 +2,14 @@ name: CI
 
 # uv installs from pyproject.toml: hpcagent-bench, DaCe extended, dace-relayout and FP-Arena come from PyPI;
 # scripts/bump_deps.py points the bench-tip job at the tip of the bench branch.
-# Must stay credential-free so CI runs on fork PRs.
+# Must stay credential-free so CI runs on fork PRs. Every job sets up through .github/actions/setup.
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # nightly too: the bench-tip job checks NestForge's bench-facing tests against the tip of the bench branch it tracks
+  # nightly too: the bench-tip job checks Tactics' bench-facing tests against the tip of the bench branch it tracks
   # (scripts/bump_deps.py), not only the pin
   schedule:
     - cron: '0 3 * * *'
@@ -18,7 +18,6 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# bash -eo pipefail: a failing script piped into tail (setup_hptt.sh) fails its step
 defaults:
   run:
     shell: bash
@@ -29,108 +28,34 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.12'
-          activate-environment: true
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
-      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/hptt
-          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
-      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
-      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
-      # tests/test_bench_data.py runs a bench reference, which enters the grading seal's user namespace.
-      - name: Grading seal
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e . --group dev
-      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
-      - uses: actions/cache/restore@v4
-        id: emit-cache
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-      - name: Emit the bench corpus
-        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
-      - if: steps.emit-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - uses: ./.github/actions/setup
       - run: pre-commit run --all-files --show-diff-on-failure
       # strict typing ([tool.mypy]); the tests hold a second conftest module, so they are checked on their own
       - name: mypy --strict
         run: mypy && mypy tests
       - name: pytest (a skip fails the run)
         env:
-          NESTFORGE_CI_NO_SKIP: '1'
-        # tests/test_bench_data.py runs the bench's references, which need its OpenMP launch environment.
+          TACTICS_CI_NO_SKIP: '1'
         run: |
-          launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
-          eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
           pytest -m "not integration and not judge and not cloudsc and not gpu and not vendor" -n auto --timeout=900 --durations=15 --cov=tactics --cov-report=term
 
+  # The integration tests, then every phase through the plugin route with finalize's library graded by an
+  # in-process bench judge: one runner, as the judge tests alone take minutes.
   integration:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.12'
-          activate-environment: true
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
-      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/hptt
-          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
-      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
-      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
-      # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
-      # (ubuntu-24.04 restricts that through AppArmor).
-      - name: Grading seal
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e . --group dev
-      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
-      - uses: actions/cache/restore@v4
-        id: emit-cache
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-      - name: Emit the bench corpus
-        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
-      - if: steps.emit-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - uses: ./.github/actions/setup
       - name: pytest
-        # The bench's references run only under the OpenMP launch environment its judge uses
-        # (hpcagent_bench.flags.openmp_launch_env), read once when numpy loads.
         run: |
-          launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
-          eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
           pytest -m "integration and not cloudsc and not gpu and not vendor" --ignore=tests/test_replay.py --timeout=900 --durations=15 --cov=tactics --cov-report=term
+      - name: pytest (judge)
+        run: |
+          ulimit -s "$(ulimit -H -s)"
+          pytest -m "judge and not gpu and not vendor" -n 2 --timeout=1800 --durations=15
 
   # Every reference solution replayed against the bench oracle; its own job, so the replays never share the
   # integration job's time limit.
@@ -139,167 +64,32 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.12'
-          activate-environment: true
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
-      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/hptt
-          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
-      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
-      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
-      # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
-      # (ubuntu-24.04 restricts that through AppArmor).
-      - name: Grading seal
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e . --group dev
-      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
-      - uses: actions/cache/restore@v4
-        id: emit-cache
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-      - name: Emit the bench corpus
-        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
-      - if: steps.emit-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - uses: ./.github/actions/setup
       - name: replay
         # One reference solution per worker: each replay builds the baseline and the reference (#42).
         run: |
-          launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
-          eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
           pytest tests/test_replay.py -m integration -n auto --timeout=900 --durations=15 --cov=tactics --cov-report=term
-
-  # Every phase through the plugin route, then finalize's library graded by an in-process bench judge.
-  judge:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.12'
-          activate-environment: true
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
-      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/hptt
-          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
-      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
-      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
-      # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
-      # (ubuntu-24.04 restricts that through AppArmor).
-      - name: Grading seal
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e . --group dev
-      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
-      - uses: actions/cache/restore@v4
-        id: emit-cache
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-      - name: Emit the bench corpus
-        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
-      - if: steps.emit-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-      - name: pytest
-        # The bench's references run only under the OpenMP launch environment its judge uses
-        # (hpcagent_bench.flags.openmp_launch_env), read once when numpy loads.
-        run: |
-          launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
-          eval "$launch_env"
-          ulimit -s "$(ulimit -H -s)"
-          pytest -m "judge and not gpu and not vendor" -n 2 --timeout=1800 --durations=15
 
   cloudsc:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # The tests share nothing but the canonicalized program, which each runner builds in minutes: three runners cut
-    # the wall time from the sum of the tests to the slowest shard.
+    # The tests share nothing but the canonicalized program, which each runner builds in minutes: two runners of
+    # about the same length cut the wall time to the slower one.
     strategy:
       fail-fast: false
       matrix:
         shard:
-          - name: performance
-            select: tests/test_cloudsc_phases.py -k test_performance_reports
+          - name: performance and moves
+            select: tests/test_cloudsc_moves.py tests/test_cloudsc_phases.py -k "test_performance_reports or test_random_moves"
           - name: phases
             select: tests/test_cloudsc_phases.py -k "not test_performance_reports"
-          - name: moves
-            select: tests/test_cloudsc_moves.py
     name: cloudsc (${{ matrix.shard.name }})
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          python-version: '3.12'
-          activate-environment: true
-          enable-cache: true
-          cache-dependency-glob: pyproject.toml
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
-      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/hptt
-          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
-      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
-      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
-      # The bench's reference runs in its grading seal, which enters an unprivileged user namespace
-      # (ubuntu-24.04 restricts that through AppArmor).
-      - name: Grading seal
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - run: uv pip install -e . --group dev
-      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
-      - uses: actions/cache/restore@v4
-        id: emit-cache
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-      - name: Emit the bench corpus
-        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
-      - if: steps.emit-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+      - uses: ./.github/actions/setup
       - name: pytest (every phase and random moves on canonicalized cloudsc_monolith)
-        # The bench's references run only under the OpenMP launch environment its judge uses
-        # (hpcagent_bench.flags.openmp_launch_env), read once when numpy loads.
         run: |
-          launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
-          eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
           pytest -m cloudsc ${{ matrix.shard.select }} --timeout=5400 --durations=15 -s
 
@@ -308,47 +98,11 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: ./.github/actions/setup
         with:
-          python-version: '3.12'
-          activate-environment: true
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/apt-archives
-          key: apt-${{ runner.os }}-${{ hashFiles('scripts/setup_apt.sh') }}
-      - run: sudo bash scripts/setup_apt.sh --no-flang --archives "$RUNNER_TEMP/apt-archives"
-      - uses: actions/cache@v4
-        with:
-          path: ${{ runner.temp }}/hptt
-          key: hptt-${{ runner.os }}-${{ hashFiles('scripts/setup_hptt.sh') }}
-      # DaCe lowers a top-level TensorTranspose kernel to HPTT; it refuses the pure loop when HPTT is missing.
-      - run: bash scripts/setup_hptt.sh "$RUNNER_TEMP/hptt" | tail -1 >> "$GITHUB_ENV"
-      # The plugin tests read the bench's references, which run in its grading seal (see integration).
-      - name: Grading seal
-        run: |
-          knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-      - name: Pin the tip of the tracked bench branch and the DaCe and relayout it pins
-        run: python scripts/bump_deps.py && git diff pyproject.toml
-      - run: uv pip install -e . --group dev
-      # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm
-      # runner checks fingerprints instead of emitting the corpus (keyed by pyproject.toml, bench source included).
-      - uses: actions/cache/restore@v4
-        id: emit-cache
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
-      - name: Emit the bench corpus
-        run: python -c "from tactics.corpus.bench import materialize_dace_corpus; materialize_dace_corpus()"
-      - if: steps.emit-cache.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .venv/lib/python3.12/site-packages/hpcagent_bench/benchmarks/**/.cache
-          key: bench-emit-${{ runner.os }}-${{ hashFiles('pyproject.toml') }}
+          bench-tip: 'true'
       - name: "pytest (the tests that call the bench: plugin, corpus, manifests, session process)"
         run: |
-          launch_env=$(python -c 'from hpcagent_bench.flags import openmp_launch_env as e; print(" ".join(f"export {k}={v};" for k, v in e().items()))')
-          eval "$launch_env"
           ulimit -s "$(ulimit -H -s)"
           pytest -m "not cloudsc and not gpu and not vendor" -n auto --timeout=900 \
             tests/test_bench_plugin.py tests/test_corpus_emit.py tests/test_manifest_signature.py \

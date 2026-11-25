@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``vectorize-doall`` vectorizes the one doall it names; ``view_tree`` prints bodies as Python or as C, which
 shows a vectorized body's tile functions. Printing never changes the program."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Random moves at random places of the canonicalized bench cloudsc_monolith either apply and keep the whole program
 within the bench's grading tolerance, or are refused and leave the program untouched.
@@ -25,7 +25,8 @@ from tactics.stages.performance import Reference
 
 pytestmark = pytest.mark.cloudsc
 
-NSEEDS = 3
+# one walk: each costs about 8 minutes, and the moves, the gate and rollback are the same code on every seed
+NSEEDS = 1
 ATTEMPTS = 16
 CHECK_EVERY = 4
 

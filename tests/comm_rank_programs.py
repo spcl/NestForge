@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Programs that communicate and compute, run on MPI ranks by ``tests/test_comm_ranks.py``: each has compute that a
 communication row may cross and compute it may not, so the legal moves have somewhere to go. Every fixture gives its

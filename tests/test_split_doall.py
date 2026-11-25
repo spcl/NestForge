@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``split-doall`` cuts a doall's range in two states: the parts partition the range, the program computes the same,
 and a cut outside the range leaves one empty part."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The labels the structure tree prints, ``<kind><n>`` and stable while their row lives (:class:`Namer`), and the inlining
 of top-level nested SDFGs that canonicalization runs first."""
@@ -78,14 +78,14 @@ def is_copy(node: nodes.Node) -> bool:
 
 
 def is_call(state: SDFGState, node: nodes.Node) -> bool:
-    """Whether ``node`` is a library call row of ``state``: a library node (a kernel NestForge built included), or a
+    """Whether ``node`` is a library call row of ``state``: a library node (a kernel Tactics built included), or a
     one-element copy's tasklet outside every map (inside one it is a statement of the body)."""
     return isinstance(node, nodes.LibraryNode) or (is_copy_tasklet(node) and state.entry_node(node) is None)
 
 
 def top_level_doalls(state: SDFGState) -> list[nodes.MapEntry | nodes.CodeNode]:
     """The doalls of ``state`` not nested in a map: its maps, and its library calls (each a black-box doall; a
-    kernel NestForge built is not one, nor is a communication row, which never joins a kernel), in
+    kernel Tactics built is not one, nor is a communication row, which never joins a kernel), in
     ``scope_children`` order."""
     return [
         n
@@ -180,7 +180,7 @@ class Namer:
 
 def normalize_labels(sdfg: dace.SDFG, namer: Namer | None = None) -> None:
     """Name every block ``<kind><n>``, every map ``doall<n>`` and every library call ``lib_<family><n>`` (``namer``,
-    a fresh one by default), keeping the names ``namer`` gave before. A kernel NestForge built (``ExternalCall``)
+    a fresh one by default), keeping the names ``namer`` gave before. A kernel Tactics built (``ExternalCall``)
     keeps its label unless an earlier one holds it."""
     namer = namer if namer is not None else Namer()
     relabel_cfg(sdfg, namer, set())

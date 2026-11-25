@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``relayout``: the agent lays an argument out with one operation of the bench's requests; the program works on it
 laid out, is timed on data laid out as the harness lays it out, and hands the operations to the bench."""

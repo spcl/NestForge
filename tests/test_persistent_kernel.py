@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``persistent-kernel``: a time loop of doalls inside a kernel runs as one persistent kernel (DaCe's MegakernelLoops). On the
 GPU that is one launch instead of one per doall and step; on the CPU, where code generation already runs the loop in
@@ -173,6 +173,7 @@ def test_rows_of_two_regions_a_second_run_and_an_unknown_kernel_are_refused(tmp_
     assert (again.status, again.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
 
 
+# Reproducer: megakernel block conflicted with 16x16 thread blocks (#113, jacobi_2d)
 def test_a_persistent_gpu_time_loop_of_2d_doalls_renders_as_one_megakernel(tmp_path: Path) -> None:
     """spcl/tactics#113: ``jacobi_2d``'s time loop on the GPU, persistent: its 2-D doalls take the megakernel's 1-D
     block, so the GPU tiling makes no 16x16 thread blocks that conflict with the megakernel's launch."""
@@ -190,6 +191,7 @@ def test_a_persistent_gpu_time_loop_of_2d_doalls_renders_as_one_megakernel(tmp_p
     assert len(re.findall(r"__global__[^;{]*run_megakernel", src.device_unit.read_text())) == 1
 
 
+# Reproducer: list_moves raised KeyError: None on an if in a time loop (#110)
 def test_a_kernel_whose_time_loop_holds_an_if_lists_its_moves(tmp_path: Path) -> None:
     """spcl/tactics#110: the walk over the kernel's regions yields the conditional, which has no start block."""
     sut = Session(steps_with_if.to_sdfg(simplify=True), work_dir=str(tmp_path), sizes={"N": SIZE, "T": STEPS})

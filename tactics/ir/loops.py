@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The loops a kernel sits inside: their iterators are symbols the kernel takes, defined by the loop, and a
 standalone check of the kernel needs a value for each."""

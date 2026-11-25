@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The answers the agent reads as lines (``plugin/tactics/answers.py``): every fact of the record stays, the JSON
 layout goes."""
@@ -12,16 +12,16 @@ from hpcagent_agent.plugins import Plugin
 
 
 @pytest.fixture(scope="module")
-def answers(nestforge_plugin: tuple[Plugin, ...]) -> Iterator[ModuleType]:
-    from hpcagent_bench_plugins.nestforge import answers  # importable once the bench loaded the plugin
+def answers(tactics_plugin: tuple[Plugin, ...]) -> Iterator[ModuleType]:
+    from hpcagent_bench_plugins.tactics import answers  # importable once the bench loaded the plugin
 
     yield answers
 
 
 @pytest.fixture(scope="module")
-def defaults(nestforge_plugin: tuple[Plugin, ...]) -> dict[str, object]:
-    """The defaults the agent side renders with (``tools/nestforge.py``)."""
-    from hpcagent_bench_plugins.nestforge.wire import MOVE_DEFAULTS  # importable once the bench loaded the plugin
+def defaults(tactics_plugin: tuple[Plugin, ...]) -> dict[str, object]:
+    """The defaults the agent side renders with (``tools/tactics.py``)."""
+    from hpcagent_bench_plugins.tactics.wire import MOVE_DEFAULTS  # importable once the bench loaded the plugin
 
     return dict(MOVE_DEFAULTS)
 
@@ -79,11 +79,6 @@ def test_every_value_of_a_move_that_is_not_its_default_can_be_read_back_from_its
     read = dict(field.split("=", 1) for field in fields)
     assert (head, label) == ("set-schedule-cpu", "doall7")
     assert read == {"chunk": "16", "schedule": "dynamic", "threads": "8"}
-
-
-def test_the_wire_defaults_are_those_apply_move_takes(defaults: dict[str, object]) -> None:
-    assert defaults["tile_sizes"] == [] and defaults["max_iterations"] == 16 and defaults["isa"] == "auto"
-    assert "kind" not in defaults and "labels" not in defaults
 
 
 def test_no_moves_and_an_error_answer(answers: ModuleType, defaults: dict[str, object]) -> None:

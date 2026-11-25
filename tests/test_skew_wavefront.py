@@ -1,8 +1,8 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The ``skew-wavefront`` move. A session starts from the canonical form without wavefronts. The move skews a nest
 whose diagonals DaCe proves independent, refuses one that is no wavefront with DaCe's sentence, and is undone by
-``rollback``. The default moves skew every wavefront first, so ``nestforge_default`` keeps today's program."""
+``rollback``. The default moves skew every wavefront first, so ``tactics_default`` keeps today's program."""
 
 import ctypes
 

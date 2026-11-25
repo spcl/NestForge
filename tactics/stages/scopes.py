@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 3: lower each offloading scope into an ``ExternalCall`` kernel. An agent may name several maps of one state, or
 a straight run of blocks of one region, as one scope. The default (:func:`default_units`), over the program's
@@ -53,7 +53,7 @@ from tactics.stages.moves import map_body, plan_subgraph_fission
 
 def is_parallel_nest(node: object) -> bool:
     """Whether ``node`` is a doall: a map not scheduled sequentially, or a library call (a black-box doall; a kernel
-    NestForge built is not one)."""
+    Tactics built is not one)."""
     if isinstance(node, nodes.MapEntry):
         return bool(node.map.schedule != dace.ScheduleType.Sequential)
     return isinstance(node, nodes.LibraryNode) and not isinstance(node, ExternalCall)

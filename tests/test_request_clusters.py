@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Clustering recorded transformation requests: requests whose example pairs coincide after canonicalization, up to
 the names of arrays and symbols, are one candidate for the authoring step; a different transformation is another."""
@@ -66,7 +66,7 @@ def test_the_script_reads_request_files_and_reports_a_broken_example(tmp_path: P
             "examples": [e.model_dump() for e in (reciprocal("a", "b", "N", 2.0), broken)],
         },
     ]
-    folder = tmp_path / "run" / "nestforge"
+    folder = tmp_path / "run" / "tactics"
     folder.mkdir(parents=True)
     (folder / f"requests-{quote('e1@jacobi_1d', safe='')}.jsonl").write_text(
         "".join(json.dumps(c) + "\n" for c in calls)

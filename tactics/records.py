@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The record every NestForge answer is: a frozen pydantic model, and the outcome enums its ``status`` takes. An
+"""The record every Tactics answer is: a frozen pydantic model, and the outcome enums its ``status`` takes. An
 enum serializes as its lowercase name (``NOT_FOUND`` as ``not-found``), so JSON readers see words, not numbers."""
 
 import enum

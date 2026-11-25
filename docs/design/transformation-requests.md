@@ -16,7 +16,7 @@ literals count, since they are offsets and bounds. Requests whose examples diffe
 merges those by reading. An example that does not build is listed with
 its cluster and kept out of every key.
 
-An agent that finds no fitting move may name one with `request_transformation` (packet `nestforge-requests`; E1 runs
+An agent that finds no fitting move may name one with `request_transformation` (packet `tactics-requests`; E1 runs
 without it, so requests never count in E1's cost). A request names the rows, describes the transformation, and gives at
 least five pairs of small programs, before and after: Python modules with one `@dace.program` each, or C
 (`language: c`). It never changes the program.

@@ -1,9 +1,9 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``relayout``: lay a program argument out as one of relayout's request operations, in the bench's own
 ``requests`` JSON. The program is rewritten to work on the argument as laid out (relayout's ``apply_requests``,
 converting nothing), and the operations go to the bench as the submission's ``requests``: the harness lays every
-argument out before the call and reads the outputs back after it, as NestForge does when it times the program."""
+argument out before the call and reads the outputs back after it, as Tactics does when it times the program."""
 
 import copy
 from collections.abc import Mapping, Sequence

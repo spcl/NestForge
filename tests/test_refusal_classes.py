@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Every refusal carries its class, so the plugin record counts refusals by class (docs/plugin-record.md):
 each candidate a move kind lists on corpus programs is planned, and every refusal it answers is classed."""

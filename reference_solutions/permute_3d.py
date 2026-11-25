@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""3D tensor permutation ``B = A.transpose(...)``: expand the library transpose into NestForge's own loops, tile the
+"""3D tensor permutation ``B = A.transpose(...)``: expand the library transpose into Tactics' own loops, tile the
 map 16 x 16 x 16, then the default stage 2 on top.
 
 The default keeps the transpose as one library call (HPTT). Expanded alone it is no faster (0.98x); tiled, each

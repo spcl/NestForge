@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A transfer's bytes come from the session's sizes; a container the running program sizes has none (#96, gmres), and
 then neither has the total."""

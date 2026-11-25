@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Structure inspection and fusion diagnosis: describe_graph (CFG tree + per-nest read/write sets) and the
 ``doall-fusion`` plan of a pair ("yes" or a reason). Listing uses the same plan, so a "yes" here is a listed move
@@ -56,32 +56,26 @@ def map_entries(sdfg: SDFG) -> list[tuple[SDFGState, MapEntry]]:
     return [(st, me) for st in sdfg.states() for me in top_level_map_entries(st)]
 
 
-def test_describe_graph_lists_nests_with_read_write_sets() -> None:
+def test_a_vertical_pair_lists_its_nests_reads_and_writes_and_fuses_only_as_a_map_pair() -> None:
     sdfg = vertical_pair.to_sdfg(simplify=True)
     text = describe_graph(sdfg)
-    # This SDFG is not normalized, so the blocks keep their frontend labels -- describe_graph renders
-    # whatever it is given, and normalize_labels is what makes those labels canonical.
     assert "`- MapState" in text  # the state the two nests share, as a tree row
     assert "[i=0:N]" in text  # the iteration domain
     assert "reads=['A', 'B'] writes=['T']" in text  # producer nest
     assert "reads=['T'] writes=['C']" in text  # consumer nest
 
-
-def test_nest_reads_writes_matches_the_tree() -> None:
-    sdfg = vertical_pair.to_sdfg(simplify=True)
     reads_writes = [nest_reads_writes(st, me) for st, me in map_entries(sdfg)]
-
     assert reads_writes == [(["A", "B"], ["T"]), (["T"], ["C"])]
-    text = describe_graph(sdfg)
     assert all(f"reads={r} writes={w}" in text for r, w in reads_writes), text
 
-
-def test_can_fuse_yes_for_vertical_transient() -> None:
-    sdfg = vertical_pair.to_sdfg(simplify=True)
     (s1, m1), (s2, m2) = map_entries(sdfg)
     assert can_fuse((m1, s1), (m2, s2)) == "yes"
     assert can_fuse((m2, s2), (m1, s1)) == "yes"  # direction-independent
     assert fusion_moves(sdfg), "a legal move must be listed when the pair plans one"
+
+    (s1, m1), _ = map_entries(sdfg)
+    reason = can_fuse((m1, s1), (LoopRegion("for9"), None))
+    assert "is a LoopRegion" in reason
 
 
 def test_can_fuse_yes_for_independent_horizontal() -> None:
@@ -93,8 +87,9 @@ def test_can_fuse_yes_for_independent_horizontal() -> None:
     assert fusion_moves(sdfg)
 
 
+# Reproducer: fusion refused a non-transient intermediate (#27)
 def test_a_live_output_between_two_maps_fuses_and_keeps_its_values() -> None:
-    """NestForge refused a non-transient intermediate before asking DaCe, which fuses it and still writes it (#27)."""
+    """Tactics refused a non-transient intermediate before asking DaCe, which fuses it and still writes it (#27)."""
     sdfg = live_output_pair.to_sdfg(simplify=True)
     reference = copy.deepcopy(sdfg)
     reference.name = "live_output_pair_reference"
@@ -124,13 +119,6 @@ def test_can_fuse_reports_state_barrier_across_states() -> None:
     assert "control-flow dependency" in reason
 
 
-def test_a_map_and_a_loop_are_no_map_fusion_pair() -> None:
-    sdfg = vertical_pair.to_sdfg(simplify=True)
-    (s1, m1), _ = map_entries(sdfg)
-    reason = can_fuse((m1, s1), (LoopRegion("for9"), None))
-    assert "is a LoopRegion" in reason
-
-
 @dace.program
 def row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]) -> None:
     p = np.empty((N, N), dtype=np.float64)
@@ -143,6 +131,7 @@ def row_recurrences(p0: dace.float64[N], q: dace.float64[N, N]) -> None:
             q[i, j] = q[i, j - 1] + p[i, j - 1]
 
 
+# Reproducer: row recurrences refused fusion (#27)
 def test_two_row_recurrences_fuse_and_keep_their_values() -> None:
     """#27: iteration ``i`` of both maps touches only row ``i`` of ``p``, so the recurrences fuse into one map."""
     sdfg = row_recurrences.to_sdfg(simplify=True)

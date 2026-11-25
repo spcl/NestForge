@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``tune_move``: a tiling move tried at several sizes in one call, each measured; the fastest size that beats the
 program is kept, and with none the program stays, so the agent never tiles, untiles and tiles again."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Regressions of the build layer: persistent promotion inside parallel maps, device runtime discovery, init/exit
 status, entry binding, complex tolerance floors, compile timeouts, the forked child's setup and a missing frame."""

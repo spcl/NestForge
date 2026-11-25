@@ -1,7 +1,7 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session.persist_temporaries: a large temporary of the program is allocated once at init, not on every call, and the
-program computes the same (NestForge#63)."""
+program computes the same (spcl/tactics#63)."""
 
 import copy
 import os

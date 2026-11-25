@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session stages 5 and 6: optimize a kernel, replace its source, sweep its configurations, link the winner."""
 
@@ -316,6 +316,7 @@ def nested_scratch(a: dace.float64[N], b: dace.float64[N]) -> None:
         calls_pair_sum(a[i : i + 1], b[i : i + 1])
 
 
+# Reproducer: hoisted scratch leaked into the kernel ABI (#20)
 def test_scratch_the_oracle_hoists_from_a_deep_nest_stays_out_of_the_kernel_abi(tmp_path: Path) -> None:
     """The oracle allocates the scratch it lifts out of a nest two levels down; the kernel allocates its own, so the
     scratch is neither an argument of the kernel nor mistaken for one of its symbols (issue #20)."""

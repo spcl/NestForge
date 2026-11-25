@@ -1,7 +1,7 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Conv2D + GroupNorm + scale + max-pool + clamp: the default stage 2, then ``inline-library`` of the ``TensorDot`` that
-computes each convolution tap (NestForge's own loops instead of the TTGT call), then the stages after fusion.
+computes each convolution tap (Tactics' own loops instead of the TTGT call), then the stages after fusion.
 
 The default keeps the nine per-tap contractions as ``TensorDot`` library calls, which DaCe lowers to a transpose, a GEMM
 and a transpose. Expanded, the tap is one parallel loop nest that reads the padded window in place. Its decoys (no move, and

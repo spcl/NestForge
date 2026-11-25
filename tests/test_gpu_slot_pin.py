@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A GPU session's call narrows the visible GPUs to its slot's GPU only on a GPU slot: a CPU slot's index is a CPU
 slot ordinal, and narrowing to it left a one-GPU judge's GPU target seeing no GPU. Read off the environment."""
@@ -33,8 +33,3 @@ def test_a_gpu_session_sees_only_its_slots_gpu_on_a_gpu_slot_and_every_gpu_on_a_
     assert on_gpu_slot[0]["CUDA_VISIBLE_DEVICES"] == "5", "the slot's GPU, a position in the inherited list"
     assert on_cpu_slot[0]["CUDA_VISIBLE_DEVICES"] == "4,5,6"
     assert unpinned[0]["CUDA_VISIBLE_DEVICES"] == "4,5,6"
-
-
-if __name__ == "__main__":
-    with pytest.MonkeyPatch.context() as patch:
-        test_a_gpu_session_sees_only_its_slots_gpu_on_a_gpu_slot_and_every_gpu_on_a_cpu_slot(patch)

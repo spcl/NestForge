@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The four invariants of a program that communicates (``docs/design/comm-nodes.md``, section 4), checked after every
 kept move: I1 the skeleton stays, I2 nothing between a start and its wait touches what is in flight, I3 each row keeps
@@ -9,7 +9,16 @@ edge in DaCe to stop it."""
 import dace
 import pytest
 from comm_programs import PROGRAMS, residual_in_time_loop, ring
-from comm_rank_programs import halo_overlap
+from comm_rank_programs import (
+    halo_overlap,
+    halo_split_waitall,
+    halo_steps,
+    halo_waitall,
+    halo_waits,
+    jacobi_rows,
+    pipelined_rows,
+    two_exchanges,
+)
 from dace.frontend.python.parser import DaceProgram
 from dace.libraries.comm.nodes import Irecv, Isend, Waitall
 from dace.sdfg import nodes
@@ -22,7 +31,17 @@ from tactics.stages.lib_motion import SPLIT_BLOCKING, in_flight_refusal
 
 N = 16
 
-FIXTURES: dict[str, DaceProgram] = {**PROGRAMS, "halo_overlap": halo_overlap}
+FIXTURES: dict[str, DaceProgram] = {
+    **PROGRAMS,
+    "halo_overlap": halo_overlap,
+    "halo_waits": halo_waits,
+    "halo_waitall": halo_waitall,
+    "halo_split_waitall": halo_split_waitall,
+    "two_exchanges": two_exchanges,
+    "halo_steps": halo_steps,
+    "pipelined_rows": pipelined_rows,
+    "jacobi_rows": jacobi_rows,
+}
 
 
 def canonical(program: DaceProgram) -> Session:

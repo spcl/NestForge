@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Authored moves: a catalogue folder of DaCe pattern transformations that sessions load as the family ``authored``.
 A session offers an authored move where DaCe's matcher finds it, applies it, and rolls it back like any move."""

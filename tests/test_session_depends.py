@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session over the kernel dependency graph: one graph per program change, the kernel listing, the tree's dependency
 lines, and the JSON snapshot of each program."""
@@ -42,11 +42,9 @@ def test_the_kernel_graph_is_computed_once_and_again_after_a_mutation(tmp_path: 
     assert (before.kernels, after.kernels) == ((), ("extcall_doall0", "extcall_doall1"))
 
 
-def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path: Path) -> None:
+def test_list_kernels_and_the_tree_name_what_reaches_each_kernel_and_its_device(tmp_path: Path) -> None:
     session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
-
     kernels = session.list_kernels()
-
     assert [kernel.model_dump(mode="json") for kernel in kernels] == [
         {
             "name": "extcall_doall0",
@@ -70,26 +68,16 @@ def test_list_kernels_names_each_argument_and_what_reaches_it(tmp_path: Path) ->
         },
     ]
 
-
-def test_list_kernels_reports_the_device_stage_4_placed_each_kernel_on(tmp_path: Path) -> None:
-    session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
-
-    session.place()
-
-    assert [kernel.device for kernel in session.list_kernels()] == ["cpu", "cpu"]
-
-
-def test_describe_with_deps_prints_each_kernels_line_under_its_row(tmp_path: Path) -> None:
-    session = scoped_session(chain.to_sdfg(simplify=True), tmp_path)
     state = session.row_index()["extcall_doall1"][1]
     assert state is not None
     session.expand([state.label])
-
     lines = session.describe(deps=True).splitlines()
-
     row = next(index for index, line in enumerate(lines) if "extcall_doall1  LIBNODE" in line)
     assert lines[row + 1].endswith("extcall_doall1: T <- extcall_doall0.T, N <- program")
     assert "extcall_doall1: T <- extcall_doall0.T" not in session.describe()
+
+    session.place()
+    assert [kernel.device for kernel in session.list_kernels()] == ["cpu", "cpu"]
 
 
 def test_default_scopes_completes_when_the_analysis_refuses_the_program(tmp_path: Path) -> None:

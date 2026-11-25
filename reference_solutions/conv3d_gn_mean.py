@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Conv3D + GroupNorm + mean: the default stage 2, then the one ``interchange-doall-for`` it leaves, which takes the
 kernel-position loop out of the output-point maps (1.32-1.33x at preset M, 72 threads, job 5303945, graded against the

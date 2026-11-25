@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The layout rule of a program that communicates (``docs/design/comm-nodes.md``, section 6): the bench splits some
 arguments over the ranks along their own axes (its spec's ``mpi.arrays``), so ``relayout`` refuses them and does not

@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Require the copyright and SPDX header on every Python file under tactics/, scripts/, tests/ and examples/, and
 on conftest.py.
@@ -17,7 +17,7 @@ from pathlib import Path
 from tactics.paths import REPO_ROOT
 
 SPDX_LINE = "# SPDX-License-Identifier: GPL-3.0-or-later"
-HEADER = ("# Copyright 2021 ETH Zurich and the NestForge authors.", SPDX_LINE)
+HEADER = ("# Copyright 2021 ETH Zurich and the Tactics authors.", SPDX_LINE)
 COPYRIGHT_RE = re.compile(r"^# Copyright \d{4} ETH Zurich and the [\w.-]+ authors\.$")
 CODING_RE = re.compile(r"^[ \t\f]*#.*?coding[:=]")
 SCOPE_PREFIXES = ("tactics/", "scripts/", "tests/", "examples/")

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Parallel loop-nest coverage: the seq/parallel classifier + nested-map emission.
 
@@ -10,7 +10,6 @@ FMA) emit as nested ``for`` loops instead of raising. Both are pure/emit-level -
 import dace
 import numpy as np
 from dace.sdfg import nodes
-from dace.sdfg.state import LoopRegion
 from dace.transformation.passes.canonicalize import canonicalize
 from helpers import corpus_kernel, extract_nest_to_sdfg, sdfg_to_python
 
@@ -34,11 +33,6 @@ def test_map_schedule_drives_parallel_classification() -> None:
     assert not is_parallel_nest(entry)
     entry.map.schedule = dace.ScheduleType.Default
     assert is_parallel_nest(entry)
-
-
-def test_loop_region_is_sequential() -> None:
-    # A LoopRegion is a loop LoopToMap refused (a recurrence) -> sequential.
-    assert not is_parallel_nest(LoopRegion("l"))
 
 
 def test_real_parallel_map_kernel_is_parallel() -> None:

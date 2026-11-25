@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """What keeps the moves open, what closes them and what reopens them: a new round, the scopes that fix the kernels,
 and a finalize that leaves the session where it was."""

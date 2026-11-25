@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A kernel left inside a sequential loop takes the loop's iterator as an argument. The iterator is a scope symbol
 of the loop, never declared on the program: the kernel call reads it where it is defined, and stages 5 and 6 give

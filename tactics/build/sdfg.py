@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Compile DaCe-generated code with a chosen compiler and flags and call it through ctypes, instead of
 ``dace.compile()``, whose ``__call__`` re-marshals arguments on every call."""
@@ -426,7 +426,7 @@ def build_linked_program(sdfg: dace.SDFG, build_folder: Path) -> Path:
 
     Loading maps libomp into this process, and with ``OMP_PROC_BIND`` or ``OMP_PLACES`` set an initialized libomp
     binds this process to one core and keeps that binding in every child it forks, which then runs the whole team
-    on that core (NestForge#99). A timing therefore loads the library only in its child."""
+    on that core (spcl/tactics#99). A timing therefore loads the library only in its child."""
     extra = [dace.config.Config.get("compiler", "extra_cmake_args"), *libomp_cmake_args(program_compiler())]
     # DaCe folds compiler.linker.args into the one CMAKE_SHARED_LINKER_FLAGS it passes, after extra_cmake_args
     linker_args = [dace.config.Config.get("compiler", "linker", "args"), AS_NEEDED]

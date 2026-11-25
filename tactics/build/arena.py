@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Validation and timing of a built kernel: seeded inputs, the NumPy oracle, the difference to it, and the ctypes call
 that binds its arguments once and times repeated calls (the grade itself is :mod:`tactics.build.grading`)."""
@@ -72,7 +72,7 @@ def index_fill(shape: tuple[int, ...], dt: np.dtype, seed: int, stream: int) -> 
     extent to bound it, so it stays zero."""
     if not shape:
         return np.zeros(shape, dt)
-    from hpcagent_bench.initialize import fill_index_array  # the bench imports NestForge: no top-level import
+    from hpcagent_bench.initialize import fill_index_array  # the bench imports Tactics: no top-level import
     from hpcagent_bench.support.counter_generator import CounterGenerator
 
     filled: np.ndarray = fill_index_array(shape, dt.name, CounterGenerator(seed, stream=stream))

@@ -1,9 +1,9 @@
-# What NestForge needs from HPCAgent-Bench
+# What Tactics needs from HPCAgent-Bench
 
 [Designs](README.md)
 
-Written 2026-11-16 for the bench maintainers, against HPCAgent-Bench `cc1124254` (on the way to v1.0) and NestForge
-`bf068ae`. Each request says what is missing, why NestForge needs it, and a proposed design. NestForge patches none
+Written 2026-11-16 for the bench maintainers, against HPCAgent-Bench `cc1124254` (on the way to v1.0) and Tactics
+`bf068ae`. Each request says what is missing, why Tactics needs it, and a proposed design. Tactics patches none
 of them on its side. B1 to B5, B11, and B12 belong to the distributed work ([comm-nodes.md](comm-nodes.md)), B6
 to B10 are independent of it, and B13 and B14 are baselines for the study, and B15 makes its builds equal.
 
@@ -19,9 +19,9 @@ to B10 are independent of it, and B13 and B14 are baselines for the study, and B
 | B8 | A tuner flavor can decline a kernel as unsupported | flavors that cannot take a residency (B4) | small |
 | B9 | A route request names the episode's packet | nothing; hardening | small |
 | B10 | mypy error in `config.py` | clean hooks | open as bench PR #190 |
-| B11 | A NestForge submission adds no communication | the claim that the agent never writes MPI | medium |
+| B11 | A Tactics submission adds no communication | the claim that the agent never writes MPI | medium |
 | B12 | Two application tasks: the ICON dynamical core and OMEN | the application experiment | large |
-| B13 | An LLVM-pass agent packet | the catalogue baseline of the NestForge study | medium |
+| B13 | An LLVM-pass agent packet | the catalogue baseline of the Tactics study | medium |
 | B14 | A GEAK harness plugin | a GPU baseline from the literature | open, decide first |
 | B15 | A code agent names its build or requests the sweep | equal builds between agents that write and agents that decide | medium |
 | B16 | MLIR in the image with its CUDA runtime | GPU kernels of the MLIR and LLVM agent ([mlir-llvm-agent.md](mlir-llvm-agent.md)) | small |
@@ -90,7 +90,7 @@ no `dace_*` column and no plugin on top of one can take a distributed task.
 **Proposed design.** One `<kernel>_dace_mpi.py` per kernel beside the references: a `@dace.program` over the local
 tiles that takes `comm` and uses `mpi4py` calls DaCe's frontend turns into communication nodes (`comm.Isend`,
 `comm.Irecv`, `MPI.Request.Waitall`, `comm.Allreduce`). The halo fixtures use nonblocking exchanges, so a move can
-overlap them with compute. `DaceFramework.build_sdfgs` loads this file for a distributed task. NestForge can
+overlap them with compute. `DaceFramework.build_sdfgs` loads this file for a distributed task. Tactics can
 contribute the two stencil files with its fixtures.
 
 Two things the plain references use have no DaCe counterpart today: DaCe has no `Sendrecv` node, and its `mpi4py`
@@ -119,7 +119,7 @@ An ICON task with MPI ranks is a later request. It needs B1 to B4 first, and its
 
 **Question.** A submission may carry layout operations (`permute`, `block`) and distribution operations
 (`distribute`, `replicate`) on the same array. Which dimension names does `distribute.dim` refer to after a
-`permute`: the original ones or the permuted ones? NestForge refuses `relayout` on a distributed argument until the
+`permute`: the original ones or the permuted ones? Tactics refuses `relayout` on a distributed argument until the
 requests documentation states the order, with a test.
 
 **Proposed answer.** Operations apply in list order, and each names dimensions as they are after the operations
@@ -128,12 +128,12 @@ before it. This is how the digit operations already compose.
 ## B6: precision per argument in the entry
 
 **Missing.** The entry declares every floating-point argument at the kernel's one precision. A `relayout` cast (an
-argument stored in a narrower type) cannot be finalized, and NestForge refuses it (`stages/layout.py:141`).
+argument stored in a narrower type) cannot be finalized, and Tactics refuses it (`stages/layout.py:141`).
 
 **Proposed design.** The `cast` request already exists for the `mixed-precision` request set. `render_canonical`
 takes the submission's `requests` and declares each cast argument at its requested type, and the harness passes that
 argument converted, untimed, as it does for a layout. The judge compares outputs at the kernel's precision after
-converting back. NestForge then passes its cast operations through `Final.requests`, which it fills for layouts
+converting back. Tactics then passes its cast operations through `Final.requests`, which it fills for layouts
 today.
 
 ## B7: a tool call's route request names the assistant message
@@ -159,7 +159,7 @@ records the episode as unsupported with the reason, in the same outcome class as
 
 ## B9: a route request names the episode's packet
 
-**Status.** Not needed for NestForge's design: the agent-side tool wrapper forwards the packet's setting with each
+**Status.** Not needed for Tactics' design: the agent-side tool wrapper forwards the packet's setting with each
 call ([move-families.md](../move-families.md)). The request remains as hardening.
 
 **Missing.** A plugin's session lives in the judge's process. A packet's `env` reaches the agent's tools, and
@@ -173,14 +173,14 @@ plugin reads its own packet table for anything further.
 `pre-commit run --all-files` on main reports an argument-type error at `hpcagent_bench/config.py:1094` (the
 `TypeAdapter(Annotated[(...)])` call in `adapter`). Bench PR #190 fixes it.
 
-## B11: a NestForge submission adds no communication
+## B11: a Tactics submission adds no communication
 
-**Missing.** The paper claims that the agent never writes communication code. With the packet `nestforge-full` the
+**Missing.** The paper claims that the agent never writes communication code. With the packet `tactics-full` the
 agent writes kernel code, and nothing stops a kernel from calling MPI.
 
 **Proposed design.** Two checks, one on each side.
 
-1. NestForge refuses a `write_kernel` source that references an MPI, NCCL, or RCCL symbol or header (a token check on
+1. Tactics refuses a `write_kernel` source that references an MPI, NCCL, or RCCL symbol or header (a token check on
    the preprocessed unit, then the undefined symbols of the built object: no `MPI_*`, `PMPI_*`, `ncclXxx`).
 2. The bench's anti-cheat gets a rule a packet can switch on, `communication = "canonical"`: the undefined MPI symbols
    of the submitted library must be a subset of those of the canonical program's library for the same kernel, which
@@ -221,7 +221,7 @@ Recommended: option 1 as the feature, with option 3 as the first milestone that 
 
 ## B13: an LLVM-pass agent packet
 
-**Missing.** The NestForge study compares the agent working through NestForge's moves with agents that write code
+**Missing.** The Tactics study compares the agent working through Tactics' moves with agents that write code
 (the default agent and AutoKernel). A reviewer will ask whether any catalogue of verified transformations does as
 well, and Klepl et al. (arXiv 2608.08085) found that abstractions helped less than prompting. The bench has no
 packet in which the agent may only choose compiler transformations. User decision, 2026-11-16: the study adds such a
@@ -229,7 +229,7 @@ baseline, and its agent chooses LLVM passes, their parameters, and `clang` flags
 
 **Proposed design.** A packet `llvm-passes` (CPU), modeled on AutoPass (arXiv 2606.20373):
 
-1. The agent cannot edit source. As for the `nestforge` packet, the judge takes only a library
+1. The agent cannot edit source. As for the `tactics` packet, the judge takes only a library
    (`JUDGE_INPUT_MODE=library`), and the native tools are `Read` only.
 2. Tools, served judge-side:
    - `list_passes`: the new pass manager's pass names (`opt -passes=help` of the image's LLVM), their parameters, and
@@ -244,7 +244,7 @@ baseline, and its agent chooses LLVM passes, their parameters, and `clang` flags
    options for the unroller, the vectorizer, and Polly (`-polly`, `-polly-parallel`). Polly counts as a pass, so the
    judge image's LLVM must be built with Polly. Any other flag is refused with the list.
 4. The starting program is the task's canonical form without wavefronts, rendered as one C++ translation unit
-   (DaCe's CPF rendering, `dace.codegen.cpf.cpf`), the same program the NestForge agent starts from
+   (DaCe's CPF rendering, `dace.codegen.cpf.cpf`), the same program the Tactics agent starts from
    ([stages.md](../stages.md), stage 1; DaCe's `canonicalize(wavefront=False)`, on extended since `ef08de68e9`), and the bench renders it as it renders the
    `cpf-cpu-src` packet's drop-in source today (`CPF_DROPIN_DIR`).
 5. Legality: every pass preserves semantics. A flag that changes floating-point semantics is judged by the bench's
@@ -256,7 +256,7 @@ is graded correct. A refused flag returns the list. A pipeline that fails to bui
 best library unchanged.
 
 **Decided by the owner, 2026-11-16.** Polly counts as a pass. The starting program is the canonical form without
-wavefronts, the NestForge agent's own starting point, so the two agents differ only in their catalogue.
+wavefronts, the Tactics agent's own starting point, so the two agents differ only in their catalogue.
 
 The rendering keeps the OpenMP pragmas of the canonical form's doalls (owner, 2026-11-16).
 
@@ -271,11 +271,11 @@ runs one episode against the same judge under the same limits. The owner decides
 
 ## B15: a code agent names its build or requests the sweep
 
-**Missing.** Every NestForge configuration ends with the speculative sweep: each kernel is built once per compiler,
+**Missing.** Every Tactics configuration ends with the speculative sweep: each kernel is built once per compiler,
 floating-point mode, and cost model, and the fastest build that passes the oracle is kept
 ([stages.md](../stages.md), code generation). The agents that write code are built at the benchmark's flags. A
 compiler or a relaxed floating-point mode alone can change a loop's speed severalfold, so a comparison of the two
-kinds of agent credits NestForge with the sweep (the study's review, 2026-11-16, first objection).
+kinds of agent credits Tactics with the sweep (the study's review, 2026-11-16, first objection).
 
 **Request.** The packets of the agents that write code (`code agent`, `code agent + canonical`, AutoKernel) take two
 ways to set the build of a submission. The owner decided on 2026-11-16 that both are supported.
@@ -285,14 +285,14 @@ ways to set the build of a submission. The owner decided on 2026-11-16 that both
    `-ffast-math` family, `-fopenmp`, the vectorizer's and the unroller's options). Any other flag is refused with
    the list.
 2. **Requested sweep.** `score` and `submit` take `sweep=true`. The judge then builds the submission once per
-   compiler, floating-point mode, and cost model of NestForge's sweep, checks each build against the task's oracle at
+   compiler, floating-point mode, and cost model of Tactics' sweep, checks each build against the task's oracle at
    the tolerance of its floating-point mode, and grades the fastest build that passes. The answer names the build it
    kept and the time of each build.
 
 Without either, a submission is built at the benchmark's flags, as today.
 
-**Rules.** The sweep's configurations are one list that NestForge and the bench share, so the two sweeps cannot
-drift. A build under a relaxed floating-point mode is judged at that mode's tolerance, as a NestForge build is. The
+**Rules.** The sweep's configurations are one list that Tactics and the bench share, so the two sweeps cannot
+drift. A build under a relaxed floating-point mode is judged at that mode's tolerance, as a Tactics build is. The
 sweep's builds and timed runs count toward the episode's wall time and its number of builds, and they cost no
 tokens beyond the call.
 
@@ -301,7 +301,7 @@ flag returns the list. A stub agent submits with `sweep=true` on `jacobi_1d`: th
 sweep and the one kept, and the kept build is the fastest that passed. A source that is wrong under fast math and
 right under strict mode is graded on the strict build.
 
-**Open.** Whether NestForge's own configurations may also name a build in place of the sweep, so that both kinds of
+**Open.** Whether Tactics' own configurations may also name a build in place of the sweep, so that both kinds of
 agent hold the same two choices.
 
 ## B16: MLIR in the image with its CUDA runtime

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The stage 2 fusion moves (:mod:`tactics.stages.moves`): list legal fusion moves and apply them, with the correctness net that any sequence of applied moves preserves the program's value bit-for-bit
 against the un-fused reference. Exercises all three arms -- loop, vertical map, horizontal map -- and the

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``set-pipeline-depth`` pipelines a loop inside a GPU kernel whose iterations first copy a tile into a buffer: the
 move sets the loop's depth, and code generation lowers it as DaCe's ``LowerMultipleBuffering``. A loop on the host is

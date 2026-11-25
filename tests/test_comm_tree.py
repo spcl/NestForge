@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Communication rows in the structure tree (``docs/design/comm-nodes.md``, section 2): a row prints ``COMM``, the
 buffers it sends and receives, the request a start writes, the starts a wait completes, the peer and tag of a

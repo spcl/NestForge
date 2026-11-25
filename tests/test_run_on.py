@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The scopes phase places kernels with moves: ``run-on-cpu`` and ``run-on-gpu`` name the kernels, each one change
 ``rollback`` takes back; ``run-on-cpu-persistent`` merges consecutive kernels into one and runs it as one persistent
@@ -112,6 +112,7 @@ def test_consecutive_kernels_merge_into_one_persistent_kernel_that_computes_what
     assert sut.check_numerics(expected()) == ""
 
 
+# Reproducer: list_scope_moves raised on a conditional's branches (#110)
 def test_consecutive_kernels_in_a_branch_are_offered_past_the_conditional(tmp_path: Path) -> None:
     """spcl/tactics#110: the walk over the program's regions yields the conditional, which has no start block; its
     branches are regions of their own and still offer their runs."""

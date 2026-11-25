@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Communication rows (``docs/design/comm-nodes.md``, sections 1 and 3): the class of a communication node, the
 buffers an operation has in flight, and why a move of one would change what the program communicates.

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A rebuilt session repeats a written kernel and a sweep as the journal records them: the source and the winner are
 built and linked again, nothing is checked or timed, so a check near its tolerance cannot end the episode."""

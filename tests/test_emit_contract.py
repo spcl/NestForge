@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The emitter contract of docs/oracle.md: the caller allocates every buffer, the Python signature matches the
 manifest, and the caller sizes scratch the way the emitter widened it."""
@@ -150,6 +150,7 @@ def rows_two_statements(dqdt: dace.float64[6, N], sx: dace.float64[6, N], sink: 
         dqdt[i, :] = dqdt[i, :] - sink[i, :]
 
 
+# Reproducer: oracle raised NameError on a nest's scratch inside a map (#15)
 def test_the_scratch_of_a_nest_left_inside_a_map_is_the_callers_to_allocate() -> None:
     """Issue #15: a multi-state loop body stays a nest inside the map after lower(); its transient arrays were
     written by the oracle but neither passed nor allocated, so it raised NameError."""

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The compilers on PATH, the one OpenMP runtime every build links (LLVM libomp), the CUDA and HIP runtimes, and the C
 signature parsing that binds a kernel entry through ctypes. Imports no DaCe; subprocess probes are cached."""

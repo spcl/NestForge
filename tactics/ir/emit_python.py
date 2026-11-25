@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Emit an SDFG or an extracted nest as one plain Python function, the kernel's correctness oracle.
 
@@ -1265,7 +1265,7 @@ def kernel_args(boundary: Boundary, arrays: list[str]) -> list[str]:
 @functools.lru_cache(maxsize=1, typed=True)
 def emitted_dir() -> Path:
     """Process-lifetime directory of emitted sources: ``linecache`` reads a traceback's source lazily."""
-    path = Path(tempfile.mkdtemp(prefix="nestforge-emitted-"))
+    path = Path(tempfile.mkdtemp(prefix="tactics-emitted-"))
     atexit.register(shutil.rmtree, path, ignore_errors=True)
     return path
 
@@ -1274,7 +1274,7 @@ def load_emitted(source: str, name: str) -> ModuleType:
     """Import emitted ``source`` as a module; the file name hashes the source, since bytecode caching keys on mtime."""
     path = emitted_dir() / f"{name}_{hashlib.sha256(source.encode()).hexdigest()[:HASH_DIGITS]}.py"
     path.write_text(source)
-    spec = importlib.util.spec_from_file_location(f"nestforge_emitted.{name}", path)
+    spec = importlib.util.spec_from_file_location(f"tactics_emitted.{name}", path)
     assert spec is not None and spec.loader is not None, f"{path} is not importable"
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

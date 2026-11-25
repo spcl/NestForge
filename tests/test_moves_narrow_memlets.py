@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """interchange-for-doall builds a nest inside a map; its outer memlets must name what one iteration touches, not the
 whole array (#24): fusions and DaCe's schedule inference read them."""

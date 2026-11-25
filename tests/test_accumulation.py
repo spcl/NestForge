@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The accumulation length ``l`` of a kernel's outputs, the ``l`` of the bench's reassociation floor
 ``eps_acc * sqrt(l)``: too short, a correct reordered reduction fails the kernel check; too long, the floor forgives

@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The NestForge bench plugin: loaded through HPCAgent-Bench's own plugin loader, every tool registered, the
+"""The Tactics bench plugin: loaded through HPCAgent-Bench's own plugin loader, every tool registered, the
 structured and kernel phases served with performance feedback, and ``finalize``'s library graded by the judge."""
 
 import asyncio
@@ -61,22 +61,22 @@ from tactics.stages.families import FAMILIES
 from tactics_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
 
 PLUGIN = REPO_ROOT / "plugin" / "tactics"
-PAGE = PLUGIN / "skills" / "nestforge" / "SKILL.md"
-# the bench files a plugin's record under the plugin's name, which stays nestforge
+PAGE = PLUGIN / "skills" / "tactics" / "SKILL.md"
+# the bench files a plugin's record under the plugin's name, which stays tactics
 RECORD = f"{plugin_record.PLUGIN}.json"
 KERNEL = "loop_level_reasoning/fuse_diamond/fuse_diamond"
 #: The bench tools the packet replaces: each takes no code and sends the library finalize built.
 OVERRIDDEN = {"profile", "score", "submit"}
-#: Tools only one packet of its own serves, never nestforge-full: transformation requests (E6) and the LLVM, MLIR and
+#: Tools only one packet of its own serves, never tactics-full: transformation requests (E6) and the LLVM, MLIR and
 #: pass-move baselines, whose agents choose passes instead of moves.
 PACKET_OWN_TOOLS = {
-    "request_transformation": "nestforge-requests",
-    "set_llvm_passes": "nestforge-llvm",
-    "set_mlir_passes": "nestforge-mlir",
-    "view_ir": "nestforge-passes",
-    "list_pass_moves": "nestforge-passes",
-    "apply_pass_move": "nestforge-passes",
-    "advance_pass_phase": "nestforge-passes",
+    "request_transformation": "tactics-requests",
+    "set_llvm_passes": "tactics-llvm",
+    "set_mlir_passes": "tactics-mlir",
+    "view_ir": "tactics-passes",
+    "list_pass_moves": "tactics-passes",
+    "apply_pass_move": "tactics-passes",
+    "advance_pass_phase": "tactics-passes",
 }
 #: The device slot a fake judge hands out.
 SLOT = DeviceSlot("cpu", 3)
@@ -131,11 +131,11 @@ def shared_folder(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> No
 
 
 @pytest.fixture(scope="module")
-def loaded(nestforge_plugin: tuple[Plugin, ...]) -> Iterator[None]:
-    assert [plugin.name for plugin in nestforge_plugin if plugin.root == PLUGIN] == ["nestforge"]
+def loaded(tactics_plugin: tuple[Plugin, ...]) -> Iterator[None]:
+    assert [plugin.name for plugin in tactics_plugin if plugin.root == PLUGIN] == ["tactics"]
     yield
     # every session process this module started, so no other test inherits a live child
-    episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
+    episodes = sys.modules[ROUTES["tactics"].handler.__module__].EPISODES
     for _, (episode, _) in list(episodes.states.items()):
         for session in episode.sessions.values():
             session.close()
@@ -145,15 +145,15 @@ def post(
     tool: str, episode: str = "episode-cpu", kernel: str = KERNEL, judge: FakeJudge | None = None, **body: object
 ) -> FakeJudge:
     judge = judge if judge is not None else FakeJudge()
-    request = RouteRequest(HTTPMethod.POST, ["nestforge", tool], {}, {"kernel": kernel, **body}, episode)
-    ROUTES["nestforge"].handler(judge, request)
+    request = RouteRequest(HTTPMethod.POST, ["tactics", tool], {}, {"kernel": kernel, **body}, episode)
+    ROUTES["tactics"].handler(judge, request)
     return judge
 
 
 @pytest.fixture
 def stub(loaded: None, monkeypatch: pytest.MonkeyPatch) -> Iterator[Stub]:
     """Every session the route starts answers from a :class:`Stub`; its episodes are forgotten afterwards."""
-    episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
+    episodes = sys.modules[ROUTES["tactics"].handler.__module__].EPISODES
     before = set(episodes.states)
     yield install(monkeypatch, Stub())
     for episode in set(episodes.states) - before:
@@ -182,17 +182,17 @@ def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
     assert (scoped["status"], unset["status"]) == ("applied", "applied"), (scoped, unset)
 
 
-def test_nestforge_owns_its_phases_and_its_gate_matches_the_tools_phases(loaded: None) -> None:
-    from hpcagent_bench_plugins.nestforge.tools.nestforge import PHASE_TOOLS
-    from hpcagent_bench_plugins.nestforge.wire import TOOLS, Phase
+def test_tactics_owns_its_phases_and_its_gate_matches_the_tools_phases(loaded: None) -> None:
+    from hpcagent_bench_plugins.tactics.answers import PHASE_TOOLS
+    from hpcagent_bench_plugins.tactics.wire import TOOLS, Phase
 
     manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
     gated = {tool: {p.value for p in phases} for tool, phases in TOOL_PHASES.items()}
     labelled = {tool: {p.value for p in d.phases} for tool, d in TOOLS.items() if Phase.ANY not in d.phases}
 
-    assert "phases" not in manifest, "the bench's phases are not NestForge's: NestForge gates its own tools"
+    assert "phases" not in manifest, "the bench's phases are not Tactics': Tactics gates its own tools"
     assert gated == labelled, "the server's gate and the phases each tool says it works in"
-    assert sorted(manifest["packets"]["nestforge"]["tools"]) == sorted(
+    assert sorted(manifest["packets"]["tactics"]["tools"]) == sorted(
         (
             *(
                 t
@@ -209,7 +209,7 @@ def test_nestforge_owns_its_phases_and_its_gate_matches_the_tools_phases(loaded:
 
 
 def test_a_blind_agent_is_not_served_a_measurement_and_the_tool_list_says_one_submission(loaded: None) -> None:
-    body = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)}
+    body = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["tactics"].tools)}
 
     blind = registry.served(registry.Setup.read({**body, "AGENT_SUBMISSION_MODE": "blind"}))
     single = registry.served(registry.Setup.read({**body, "AGENT_SUBMISSION_MODE": "single"}))
@@ -220,16 +220,16 @@ def test_a_blind_agent_is_not_served_a_measurement_and_the_tool_list_says_one_su
 
 
 def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_served(loaded: None) -> None:
-    from hpcagent_bench_plugins.nestforge.wire import TOOLS, Phase
+    from hpcagent_bench_plugins.tactics.wire import TOOLS, Phase
 
-    packet = PACKETS["nestforge"].tools
+    packet = PACKETS["tactics"].tools
 
-    assert plugins.NEXT_PHASE not in packet, "NestForge's own phase tools, not the bench's"
+    assert plugins.NEXT_PHASE not in packet, "Tactics' own phase tools, not the bench's"
     assert all(Phase.ANY in TOOLS[t].phases or Phase.STRUCTURED in TOOLS[t].phases for t in packet if t in TOOLS)
     assert OVERRIDDEN <= registry.OVERRIDES.keys() and OVERRIDDEN <= set(packet)
     assert "set_scope" not in packet and "list_move_kinds" in packet
-    assert split_frontmatter(PAGE.read_text())[0].name == "nestforge"
-    assert PACKETS["nestforge"].skills == ("nestforge",)
+    assert split_frontmatter(PAGE.read_text())[0].name == "tactics"
+    assert PACKETS["tactics"].skills == ("tactics",)
     assert TOOLS.keys() == CALLS.keys()
     for tool in TOOLS:
         params = inspect.signature(CALLS[tool]).parameters
@@ -251,7 +251,7 @@ def test_profile_takes_no_code_and_sends_the_library_finalize_built_with_its_scr
         return {"result": {"library": "/shared/lib.so", "workspace_bytes": "16*K + 128"}, "profiled": True}
 
     monkeypatch.setattr(http_json, "post_judge", judge)
-    setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)})
+    setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["tactics"].tools)})
     sut = registry.served(setup)["profile"]
 
     answer = sut.run({"tool": "none", "threads": 24, "size": "S"})
@@ -261,7 +261,7 @@ def test_profile_takes_no_code_and_sends_the_library_finalize_built_with_its_scr
     assert {"tool", "threads", "counter_group", "size"} <= arguments
     assert not {"source", "source_file", "library", "workspace_bytes", "build"} & arguments
     assert answer["profiled"] is True and refused["ok"] is False, (answer, refused)
-    assert [route for route, _ in calls] == ["/nestforge/finalize", "/profile"], "the refused call reaches no judge"
+    assert [route for route, _ in calls] == ["/tactics/finalize", "/profile"], "the refused call reaches no judge"
     assert "tool" not in calls[0][1]
     assert calls[1][1]["library"] == "/shared/lib.so" and calls[1][1]["workspace_bytes"] == "16*K + 128"
     assert (calls[1][1]["tool"], calls[1][1]["threads"], calls[1][1]["size"]) == ("none", 24, "S")
@@ -278,7 +278,7 @@ def test_profile_offers_ranks_on_a_distributed_task_only_and_sends_them_to_the_j
         return {"result": {"library": "/shared/lib.so", "workspace_bytes": "0"}, "runs": []}
 
     monkeypatch.setattr(http_json, "post_judge", judge)
-    packet = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)}
+    packet = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["tactics"].tools)}
     distributed = {**packet, http_json.REQUEST_ACTIONS_ENV: json.dumps({"operations": ["distribute"]})}
     single = registry.served(registry.Setup.read(packet))["profile"]
     sut = registry.served(registry.Setup.read(distributed))["profile"]
@@ -294,9 +294,9 @@ def test_profile_offers_ranks_on_a_distributed_task_only_and_sends_them_to_the_j
 
 
 def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: None) -> None:
-    from hpcagent_bench_plugins.nestforge.wire import TOOLS
+    from hpcagent_bench_plugins.tactics.wire import TOOLS
 
-    packet = PACKETS["nestforge-full"].tools
+    packet = PACKETS["tactics-full"].tools
     own = {tool: PACKETS[name].tools for tool, name in PACKET_OWN_TOOLS.items()}
 
     assert sorted(packet) == sorted((*(t for t in TOOLS if t not in PACKET_OWN_TOOLS), *OVERRIDDEN))
@@ -319,6 +319,49 @@ def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: 
         "list_pass_moves",
     }
     assert hints["write_kernel"].destructive and not hints["apply_move"].destructive
+
+
+def rpc(method: str, episode: str = "episode-mcp", message_id: int | None = 1, **params: object) -> FakeJudge:
+    """One JSON-RPC message to ``POST /tactics/mcp``, as an MCP client sends it."""
+    judge = FakeJudge()
+    body: dict[str, object] = {"jsonrpc": "2.0", "method": method, **({"params": params} if params else {})}
+    if message_id is not None:
+        body["id"] = message_id
+    ROUTES["tactics"].handler(judge, RouteRequest(HTTPMethod.POST, ["tactics", "mcp"], {}, body, episode))
+    return judge
+
+
+def test_the_mcp_endpoint_lists_every_served_tool_with_the_schema_of_its_model(loaded: None) -> None:
+    listed = rpc("tools/list").answer
+
+    tools = {tool["name"]: tool for tool in listed["result"]["tools"]}
+    assert listed["jsonrpc"] == "2.0" and listed["id"] == 1
+    assert "kind" in tools["apply_move"]["inputSchema"]["required"]
+    assert tools["list_moves"]["annotations"]["readOnlyHint"] is True
+
+
+def test_a_tool_called_over_mcp_shows_what_the_agent_side_tool_shows(stub: Stub) -> None:
+    from hpcagent_bench_plugins.tactics.answers import agent_answer
+    from hpcagent_bench_plugins.tactics.wire import MOVE_DEFAULTS
+
+    over_rest = post("list_moves", "episode-mcp-rest").answer
+    over_mcp = rpc("tools/call", "episode-mcp-call", name="list_moves", arguments={}, _meta={"kernel": KERNEL})
+
+    result = over_mcp.answer["result"]
+    assert result["isError"] is False
+    assert result["structuredContent"] == agent_answer("list_moves", over_rest, MOVE_DEFAULTS)
+
+
+def test_a_call_over_mcp_the_model_refuses_is_an_error_result_not_a_protocol_error(stub: Stub) -> None:
+    refused = rpc("tools/call", name="apply_move", arguments={"kind": "fuse"}, _meta={"kernel": KERNEL}).answer
+
+    assert refused["result"]["isError"] is True and "labels" in refused["result"]["content"][0]["text"]
+
+
+def test_an_mcp_notification_is_accepted_without_an_answer(loaded: None) -> None:
+    done = rpc("notifications/initialized", message_id=None)
+
+    assert (done.code, done.answer) == (HTTPStatus.ACCEPTED, {})
 
 
 def test_a_move_that_kills_its_session_is_undone_and_the_next_call_runs_on_a_session_without_it(stub: Stub) -> None:
@@ -367,7 +410,7 @@ def test_a_focus_is_journaled_so_a_fresh_session_works_on_the_same_kernel(stub: 
 
     written = post("write_kernel", "episode-focus", **SLOT_CALLS["write_kernel"])
 
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     assert written.code == HTTPStatus.OK
     assert route.journal_of("episode-focus", KERNEL)[0] == ("focus_kernel", {"name": "kernel_0"})
     assert [tool for tool, _ in stub.calls[before:]] == ["focus_kernel", "write_kernel"]
@@ -410,7 +453,7 @@ def test_every_listed_move_is_taken_back_as_list_moves_answered_it(stub: Stub, t
 
 def test_a_session_that_died_between_calls_is_replaced_and_repeats_the_agents_moves(stub: Stub) -> None:
     post("apply_move", "episode-idle", **MOVE)
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     route.episode_of("episode-idle").sessions[KERNEL].alive = False
     before = len(stub.calls)
 
@@ -422,7 +465,7 @@ def test_a_session_that_died_between_calls_is_replaced_and_repeats_the_agents_mo
 
 def restart_judge() -> None:
     """What a judge restart or an idle eviction leaves: nothing in memory."""
-    episodes = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES
+    episodes = sys.modules[ROUTES["tactics"].handler.__module__].EPISODES
     for episode in list(episodes.states):
         episodes.drop(episode)
 
@@ -444,7 +487,7 @@ def test_a_judge_restart_repeats_the_agents_changes_so_nothing_grades_the_canoni
 def test_a_journal_that_cannot_be_read_fails_loudly_and_starts_no_session(stub: Stub, line: str) -> None:
     post("apply_move", "episode-torn", **MOVE)
     restart_judge()
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     with route.journal_file("episode-torn", KERNEL).open("a") as journal:
         journal.write(line + "\n")
     started = len(stub.started)
@@ -476,12 +519,12 @@ def test_a_refused_change_is_not_journaled(stub: Stub) -> None:
 
     answered = post("apply_move", "episode-refused", **MOVE)
 
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     assert answered.code == HTTPStatus.OK and route.journal_of("episode-refused", KERNEL) == []
 
 
 def test_finalize_keeps_a_record_of_every_call_with_its_outcome_refusal_class_and_tokens(stub: Stub) -> None:
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     episode = "episode-record"
     post("view_tree", episode, tokens=100)
     post("apply_move", episode, tokens=200, **MOVE)
@@ -513,7 +556,7 @@ def test_finalize_keeps_a_record_of_every_call_with_its_outcome_refusal_class_an
 
 
 def test_an_episode_switches_families_off_at_its_first_call_for_its_whole_length(stub: Stub) -> None:
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     episode = "episode-ablation"
 
     first = post("apply_move", episode, disabled_families=["all"], **MOVE)
@@ -549,7 +592,7 @@ def test_the_agent_side_tool_sends_the_packets_switched_off_families_with_every_
 
     monkeypatch.setattr(http_json, "post_judge", post_judge)
     monkeypatch.setattr(http_json, "assigned_kernel", lambda payload: KERNEL)
-    monkeypatch.setenv("NESTFORGE_DISABLED_FAMILIES", "fusion, tiling")
+    monkeypatch.setenv("TACTICS_DISABLED_FAMILIES", "fusion, tiling")
 
     setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: "view_tree"})
     registry.served(setup)["view_tree"].run({})
@@ -563,14 +606,14 @@ def test_a_kernel_written_without_a_check_is_journaled_as_the_change_it_is(stub:
 
     post("write_kernel", "episode-unchecked", **SLOT_CALLS["write_kernel"])
 
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     assert [tool for tool, _ in route.journal_of("episode-unchecked", KERNEL)] == ["write_kernel"]
 
 
 def test_a_change_that_cannot_be_journaled_is_dropped_with_its_session_and_the_agent_is_told(
     stub: Stub, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
 
     def full(episode_id: str, kernel: str, call: object) -> None:
         raise OSError("disk full")
@@ -602,7 +645,7 @@ def test_a_relaunched_attempt_works_in_its_own_folder_and_inherits_no_moves(
 
 
 def test_an_unused_episode_ends_its_session_within_the_hour_and_never_under_a_running_call(loaded: None) -> None:
-    idle = sys.modules[ROUTES["nestforge"].handler.__module__].EPISODES.idle_seconds
+    idle = sys.modules[ROUTES["tactics"].handler.__module__].EPISODES.idle_seconds
 
     assert TOOL_TIMEOUT_S + STOP_GRACE_S < idle <= 3600.0
 
@@ -625,14 +668,14 @@ def test_only_the_finalize_of_a_submission_queues_as_the_submission_does(
         return {"result": {"library": "/shared/lib.so", "workspace_bytes": "0"}}
 
     monkeypatch.setattr(http_json, "post_judge", judge)
-    setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["nestforge"].tools)})
+    setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["tactics"].tools)})
     registry.served(setup)["submit"].run({})
     registry.served(setup)["score"].run({})
     terminal = FakeJudge()
     request = {"terminal": ["1"]}, {"kernel": KERNEL}, "episode-terminal"
-    ROUTES["nestforge"].handler(terminal, RouteRequest(HTTPMethod.POST, ["nestforge", "finalize"], *request))
+    ROUTES["tactics"].handler(terminal, RouteRequest(HTTPMethod.POST, ["tactics", "finalize"], *request))
 
-    assert [calls[0], calls[2]] == ["/nestforge/finalize?terminal=1", "/nestforge/finalize"]
+    assert [calls[0], calls[2]] == ["/tactics/finalize?terminal=1", "/tactics/finalize"]
     assert terminal.slots == 1 and terminal.terminal is True
     assert post("finalize", "episode-terminal").terminal is False
 
@@ -654,7 +697,7 @@ def written_then_lost(episode: str) -> None:
 def test_a_written_kernel_and_a_sweep_are_journaled_as_their_unchecked_untimed_repeats(stub: Stub) -> None:
     written_then_lost("episode-repeats")
 
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     assert route.journal_of("episode-repeats", KERNEL) == [
         ("write_kernel", {**SLOT_CALLS["write_kernel"], "checked": False}),
         ("tune_kernel", {"name": "kernel_0", "compilers": None, "variant": "gcc-O3"}),
@@ -662,7 +705,7 @@ def test_a_written_kernel_and_a_sweep_are_journaled_as_their_unchecked_untimed_r
 
 
 def test_a_tune_move_is_journaled_as_the_move_at_the_size_it_kept_or_not_at_all(loaded: None) -> None:
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     call = ("tune_move", {"kind": "tile-doall", "labels": ["doall8"], "values": [[32, 32], [64, 64]]})
     now = TunedValue(status="now", time_us=30.0, correct=True)
     kept = TuneResult(
@@ -685,7 +728,7 @@ def test_a_tune_move_is_journaled_as_the_move_at_the_size_it_kept_or_not_at_all(
 
 
 def test_a_get_performance_that_restored_the_fastest_version_is_journaled_as_its_rollbacks(loaded: None) -> None:
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     call: tuple[str, dict[str, Any]] = ("get_performance", {})
 
     restored = route.repeats_of(call, Reply(result=Restored(fastest_us=10.0, now_us=30.0, rolled_back=2)))
@@ -726,7 +769,7 @@ def test_a_rebuild_out_of_budget_fails_loudly_and_the_next_call_tries_again(stub
 
 
 def test_an_episodes_second_measuring_call_waits_without_holding_a_slot(stub: Stub) -> None:
-    episode = sys.modules[ROUTES["nestforge"].handler.__module__].episode_of("episode-queue")
+    episode = sys.modules[ROUTES["tactics"].handler.__module__].episode_of("episode-queue")
     judge = FakeJudge()
     judge.gone.set()
 
@@ -737,7 +780,7 @@ def test_an_episodes_second_measuring_call_waits_without_holding_a_slot(stub: St
 
 
 def test_a_call_whose_client_left_while_it_waited_for_the_session_never_runs(stub: Stub) -> None:
-    episode = sys.modules[ROUTES["nestforge"].handler.__module__].episode_of("episode-gone")
+    episode = sys.modules[ROUTES["tactics"].handler.__module__].episode_of("episode-gone")
     judge = FakeJudge()
     judge.gone.set()
 
@@ -748,12 +791,12 @@ def test_a_call_whose_client_left_while_it_waited_for_the_session_never_runs(stu
 
 
 def test_a_retry_reads_the_answer_of_a_change_whose_client_left_instead_of_applying_it_twice(stub: Stub) -> None:
-    from hpcagent_bench_plugins.nestforge.wire import ApplyMove
+    from hpcagent_bench_plugins.tactics.wire import ApplyMove
 
     move = ApplyMove(kind="fuse", labels=["map_0", "map_1"]).model_dump()
     judge = FakeJudge()
     judge.gone.set()
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     request = RouteRequest(HTTPMethod.POST, [], {}, {}, "episode-retry")
     reply = route.run_call(route.episode_of("episode-retry"), judge, request, KERNEL, ("apply_move", move), judge.gone)
 
@@ -777,7 +820,7 @@ def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypat
     def refused(setup: object) -> None:
         raise LookupError("canonicalize: RecursionError")
 
-    monkeypatch.setattr(sys.modules[ROUTES["nestforge"].handler.__module__], "SessionProcess", refused)
+    monkeypatch.setattr(sys.modules[ROUTES["tactics"].handler.__module__], "SessionProcess", refused)
 
     judge = post("get_cpf", "episode-unstartable")
 
@@ -785,7 +828,7 @@ def test_a_session_that_cannot_start_is_the_judges_fault(loaded: None, monkeypat
 
 
 def test_the_subagent_packet_adds_the_kernel_optimizer_to_the_full_packet(loaded: None) -> None:
-    packet, full = PACKETS["nestforge-subagents"], PACKETS["nestforge-full"]
+    packet, full = PACKETS["tactics-subagents"], PACKETS["tactics-full"]
     agent = subagents.parse((PLUGIN / "agents" / "kernel-optimizer.md").read_text())
 
     assert packet.agents == (agent.name,) and sorted(packet.tools) == sorted(full.tools)
@@ -794,11 +837,11 @@ def test_the_subagent_packet_adds_the_kernel_optimizer_to_the_full_packet(loaded
 
 
 def test_the_two_stage_name_is_the_full_packet_and_only_that_packet_answers_to_it(loaded: None) -> None:
-    resolved = packets.resolve("nestforge-two-stage", "cpp")
+    resolved = packets.resolve("tactics-two-stage", "cpp")
 
-    assert resolved == packets.resolve("nestforge-full", "cpp")
-    assert PACKETS.canonical("nestforge-two-stage") == "nestforge-full"
-    assert "nestforge-two-stage" not in PACKETS.entries, "an alias is no packet of its own"
+    assert resolved == packets.resolve("tactics-full", "cpp")
+    assert PACKETS.canonical("tactics-two-stage") == "tactics-full"
+    assert "tactics-two-stage" not in PACKETS.entries, "an alias is no packet of its own"
 
 
 def test_a_bench_setup_of_the_subagent_packet_stages_and_offers_the_kernel_optimizer(
@@ -806,7 +849,7 @@ def test_a_bench_setup_of_the_subagent_packet_stages_and_offers_the_kernel_optim
 ) -> None:
     environ = {
         agent_plugins.USER_PLUGIN_DIRS_ENV: str(PLUGIN),
-        agent_plugins.PACKET_AGENTS_ENV: ",".join(packets.resolve("nestforge-subagents", "cpp").agents),
+        agent_plugins.PACKET_AGENTS_ENV: ",".join(packets.resolve("tactics-subagents", "cpp").agents),
     }
 
     staged = agent_plugins.stage_agents(tmp_path, environ)
@@ -819,7 +862,7 @@ def test_a_bench_setup_of_the_subagent_packet_stages_and_offers_the_kernel_optim
 
 
 def walk(episode: str) -> Callable[..., dict[str, Any]]:
-    """A phase tool of ``episode``, through NestForge's route; its result."""
+    """A phase tool of ``episode``, through Tactics' route; its result."""
 
     def step(tool: str, **body: Any) -> dict[str, Any]:  # noqa: ANN401 -- a tool's JSON body
         judge = post(tool, episode=episode, **body)
@@ -935,7 +978,7 @@ def kernel_round(episode: str, kernel: str = KERNEL) -> tuple[str, str]:
 def test_a_real_session_restarted_from_its_journal_is_the_program_the_agent_left(loaded: None) -> None:
     move = post("list_moves", "episode-rebuilt").answer["result"][0]
     post("apply_move", "episode-rebuilt", **move)
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     assert route.journal_of("episode-rebuilt", KERNEL)[0][1]["labels"] == list(move["labels"])
     tree = post("get_cpf", "episode-rebuilt").answer["result"]
     applied = post("applied_moves", "episode-rebuilt").answer["result"]
@@ -961,19 +1004,6 @@ def test_each_finalize_keeps_its_library_and_records_what_was_graded(loaded: Non
     assert lines[1]["kernels"] == second["kernels"] and lines[1]["device_code"] is False
 
 
-@pytest.mark.integration
-def test_a_kernel_written_back_unchanged_is_linked_and_a_wrong_entry_is_refused(loaded: None) -> None:
-    name, source = kernel_round("episode-kernel")
-
-    written = post("write_kernel", episode="episode-kernel", name=name, source=source, language="cpp")
-    renamed = source.replace(f"void {name}(", f"void {name}_other(", 1)
-    refused = post("write_kernel", episode="episode-kernel", name=name, source=renamed, language="cpp")
-
-    assert written.answer["result"]["status"] == "ok", written.answer
-    assert written.answer["performance"]["structured"]["correct"] is True
-    assert refused.answer["result"]["status"] == "refused", refused.answer
-
-
 @pytest.fixture
 def decoy(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> pathlib.Path:
     """A secret in the run folder, which the judge reads and agent code must not."""
@@ -984,40 +1014,34 @@ def decoy(monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path) -> pathlib.Pa
     return secret
 
 
+# One kernel round serves every write, as starting one costs about a minute: the writes the judge refuses or that
+# break the build change nothing, then a kernel that tries to read the judge's secret, then the source written back.
 @pytest.mark.integration
-def test_a_written_kernel_cannot_include_what_the_judge_hides(loaded: None, decoy: pathlib.Path) -> None:
-    name, source = kernel_round("episode-include")
-
-    written = post(
-        "write_kernel", "episode-include", name=name, source=f'{source}\n#include "{decoy}"\n', language="cpp"
-    )
-
-    assert written.answer["result"]["status"] == "build-failed", written.answer
-    assert "the-decoy-secret" not in written.answer["result"]["reason"]
-    assert "No such file" in written.answer["result"]["reason"]
-
-
-@pytest.mark.integration
-def test_a_written_kernel_cannot_open_what_the_judge_hides_when_it_runs(loaded: None, decoy: pathlib.Path) -> None:
-    name, source = kernel_round("episode-open")
+def test_a_written_kernel_is_checked_sealed_from_what_the_judge_hides_and_tuned(
+    loaded: None, decoy: pathlib.Path
+) -> None:
+    name, source = kernel_round("episode-kernel")
     entry = re.search(rf"void {name}\([^)]*\)\s*\{{", source)
     assert entry is not None, source
     # the kernel skips its work if it reads the file, so its oracle calls a kernel outside the seal wrong
     guard = f'FILE* secret = fopen("{decoy}", "r"); if (secret != NULL) return;'
     spying = f"#include <cstdio>\n{source[: entry.end()]}{guard}{source[entry.end() :]}"
+    renamed = source.replace(f"void {name}(", f"void {name}_other(", 1)
 
-    written = post("write_kernel", "episode-open", name=name, source=spying, language="cpp")
+    including = post(
+        "write_kernel", "episode-kernel", name=name, source=f'{source}\n#include "{decoy}"\n', language="cpp"
+    ).answer
+    refused = post("write_kernel", episode="episode-kernel", name=name, source=renamed, language="cpp").answer
+    opening = post("write_kernel", "episode-kernel", name=name, source=spying, language="cpp").answer
+    written = post("write_kernel", episode="episode-kernel", name=name, source=source, language="cpp").answer
+    tuned = post("tune_kernel", episode="episode-kernel", name=name, compilers=["gcc"]).answer
 
-    assert written.answer["result"]["status"] == "ok", written.answer
-    assert written.answer["performance"]["structured"]["correct"] is True
-
-
-@pytest.mark.integration
-def test_a_tuned_kernel_reports_the_winning_configuration(loaded: None) -> None:
-    name, _ = kernel_round("episode-tune")
-
-    tuned = post("tune_kernel", episode="episode-tune", name=name, compilers=["gcc"]).answer
-
+    assert including["result"]["status"] == "build-failed", including
+    assert "the-decoy-secret" not in including["result"]["reason"]
+    assert "No such file" in including["result"]["reason"]
+    assert refused["result"]["status"] == "refused", refused
+    assert opening["result"]["status"] == "ok" and opening["performance"]["structured"]["correct"] is True, opening
+    assert written["result"]["status"] == "ok" and written["performance"]["structured"]["correct"] is True, written
     assert tuned["result"]["cells"] > 1 and tuned["result"]["winner"] is not None, tuned
     assert tuned["performance"]["structured"]["correct"] is True
 
@@ -1092,7 +1116,7 @@ def test_the_reference_column_starts_on_the_preset_the_token_resolves_to(monkeyp
         raise Started
 
     monkeypatch.setattr(tactics_bench, "start", recording_start)
-    sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference")
+    sut = ReferenceOptimizer("dace_cpu_canon_tactics_reference")
 
     with config.scoped_environment({"HPCAGENT_BENCH_SERVICE_PRESET": "XL+fuzz"}), pytest.raises(Started):
         sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
@@ -1139,13 +1163,13 @@ def test_the_reference_column_records_the_solutions_moves_and_the_default_column
     reference = column_record(
         monkeypatch,
         tmp_path / "ref",
-        ReferenceOptimizer("dace_cpu_canon_nestforge_reference", workdir=tmp_path / "ref"),
+        ReferenceOptimizer("dace_cpu_canon_tactics_reference", workdir=tmp_path / "ref"),
         FUSING,
     )
     default = column_record(
         monkeypatch,
         tmp_path / "def",
-        DefaultOptimizer("dace_cpu_canon_nestforge_default", workdir=tmp_path / "def"),
+        DefaultOptimizer("dace_cpu_canon_tactics_default", workdir=tmp_path / "def"),
         FUSING,
     )
 
@@ -1162,7 +1186,7 @@ def test_the_column_without_wavefronts_starts_its_session_with_every_move_family
 ) -> None:
     started: list[Setup] = []
     real_start = FinalizedSession()
-    sut = NoWaveOptimizer("dace_cpu_canon_nestforge_cpf_nowave", workdir=tmp_path)
+    sut = NoWaveOptimizer("dace_cpu_canon_tactics_cpf_nowave", workdir=tmp_path)
 
     record = column_record(monkeypatch, tmp_path, sut, FUSING)
 
@@ -1180,7 +1204,7 @@ def test_the_column_without_wavefronts_starts_its_session_with_every_move_family
 def test_the_reference_column_says_when_a_kernel_had_no_solution_and_it_ran_the_defaults(
     loaded: None, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
 ) -> None:
-    sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference", workdir=tmp_path)
+    sut = ReferenceOptimizer("dace_cpu_canon_tactics_reference", workdir=tmp_path)
 
     record = column_record(monkeypatch, tmp_path, sut, None)
 
@@ -1193,13 +1217,13 @@ def test_the_plugin_declares_the_reference_and_the_default_column(
     monkeypatch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
     manifest = tomllib.loads((PLUGIN / "plugin.toml").read_text())
 
-    assert manifest["flavors"]["nestforge_default"]["optimizer"] == "tactics_bench:DefaultOptimizer"
-    assert manifest["flavors"]["nestforge_cpf_nowave"]["optimizer"] == "tactics_bench:NoWaveOptimizer"
-    assert "dace_cpu_canon_nestforge_default" in manifest["ci"]["optimizers"]
+    assert manifest["flavors"]["tactics_default"]["optimizer"] == "tactics_bench:DefaultOptimizer"
+    assert manifest["flavors"]["tactics_cpf_nowave"]["optimizer"] == "tactics_bench:NoWaveOptimizer"
+    assert "dace_cpu_canon_tactics_default" in manifest["ci"]["optimizers"]
     plugins.register_flavors.cache_clear()
     plugins.register_flavors()
-    assert FRAMEWORKS.entries["dace_cpu_canon_nestforge_default"].pipelines == ("canon_cpu",)
-    assert FRAMEWORKS.entries["dace_gpu_canon_nestforge_default"].pipelines == ("canon_gpu",)
+    assert FRAMEWORKS.entries["dace_cpu_canon_tactics_default"].pipelines == ("canon_cpu",)
+    assert FRAMEWORKS.entries["dace_gpu_canon_tactics_default"].pipelines == ("canon_gpu",)
 
 
 def test_the_reference_column_leaves_an_episodes_library_in_the_episodes_folder(
@@ -1209,7 +1233,7 @@ def test_the_reference_column_leaves_an_episodes_library_in_the_episodes_folder(
     monkeypatch.setattr(tactics_bench, "Script", lambda live: live)
     monkeypatch.setattr(tactics_bench, "baseline", lambda script, ctx: None)
     monkeypatch.setattr(tactics_bench, "reference_solution", lambda kernel: None)
-    sut = ReferenceOptimizer("dace_cpu_canon_nestforge_reference", workdir=tmp_path)
+    sut = ReferenceOptimizer("dace_cpu_canon_tactics_reference", workdir=tmp_path)
 
     library = pathlib.Path(sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu").library)
     gc.collect()
@@ -1246,11 +1270,11 @@ def tuner_episode(column: str, kernel: str, url: str, folder: pathlib.Path) -> s
 
 
 @pytest.mark.judge
-@pytest.mark.parametrize("packet_judge", ["nestforge-two-stage"], indirect=True)
+@pytest.mark.parametrize("packet_judge", ["tactics-two-stage"], indirect=True)
 def test_the_two_stage_stub_walks_every_phase_through_the_gate_to_a_correct_submission(
     packet_judge: str, tmp_path: pathlib.Path
 ) -> None:
-    done = tuner_episode("dace_cpu_canon_nestforge_two_stage", "jacobi_1d", packet_judge, tmp_path)
+    done = tuner_episode("dace_cpu_canon_tactics_two_stage", "jacobi_1d", packet_judge, tmp_path)
 
     assert done.returncode == 0, done.stdout + done.stderr
     assert "submitted, correct=True" in done.stdout, done.stdout + done.stderr
@@ -1295,13 +1319,13 @@ def says(text: str) -> list[dict[str, object]]:
 
 
 @pytest.mark.judge
-@pytest.mark.parametrize("packet_judge", ["nestforge-subagents"], indirect=True)
+@pytest.mark.parametrize("packet_judge", ["tactics-subagents"], indirect=True)
 def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_the_gate_of_its_phase(
     loaded: None, packet_judge: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home, work = tmp_path / "home", tmp_path / "work"
     work.mkdir()
-    packet = packets.resolve("nestforge-subagents", "cpp")
+    packet = packets.resolve("tactics-subagents", "cpp")
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("JUDGE_URL", packet_judge)
     monkeypatch.setenv("JUDGE_RANK", "0")
@@ -1358,7 +1382,7 @@ def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_th
 def test_the_reference_column_submits_a_library_the_judge_grades_correct(
     loaded: None, judge_url: str, kernel: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    column = "dace_cpu_canon_nestforge_reference"
+    column = "dace_cpu_canon_tactics_reference"
     monkeypatch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
     if column not in FRAMEWORKS.entries:
         plugins.register_flavors.cache_clear()

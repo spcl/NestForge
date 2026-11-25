@@ -1,8 +1,8 @@
-# The mlir baseline: the agent chooses the mlir pass pipeline, not NestForge's moves; this text replaces NestForge's.
+# The mlir baseline: the agent chooses the mlir pass pipeline, not Tactics' moves; this text replaces Tactics'.
 agent:
   set:
-    nestforge: {text: "file:passes/mlir.md"}
+    tactics: {text: "file:passes/mlir.md"}
     end_to_end: {enabled: false}
 task:
   set:
-    nestforge: {text: "file:passes/mlir.md"}
+    tactics: {text: "file:passes/mlir.md"}

@@ -1,7 +1,7 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A bool scalar input that canonicalization promotes to a symbol (vexx_k's ``gamma_only``) is bound like an integer
-or a float one, and the built program receives its value (spcl/NestForge#79)."""
+or a float one, and the built program receives its value (spcl/tactics#79)."""
 
 import ctypes
 from pathlib import Path

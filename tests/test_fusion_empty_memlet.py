@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """An empty memlet between two maps orders them and reads nothing, so it gives ``doall-fusion`` no intermediate.
 

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Work and depth are not in the tree by default; ``get_work_depth`` gives them for the rows asked, at the session's
 sizes or as formulas."""

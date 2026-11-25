@@ -1,8 +1,8 @@
-# The structure tree: NestForge's summary IR
+# The structure tree: Tactics' summary IR
 
 [Overview](../README.md) · [Stages](stages.md) · [Code map](README.md)
 
-NestForge owns one DaCe SDFG per session. Neither the agent nor a person reads the SDFG itself: they read the
+Tactics owns one DaCe SDFG per session. Neither the agent nor a person reads the SDFG itself: they read the
 **structure tree**, a text summary with one row per control-flow block, doall and library call. The tree is the IR
 the agent reasons in. It names every row with a stable label, and the label is how a move names what it rewrites. A
 move answers without the tree; the agent reprints only the rows it reads next. This page is the contract of that text: what a row is, which SDFG object it

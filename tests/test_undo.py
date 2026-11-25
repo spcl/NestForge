@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A move can be taken back, a move that builds an invalid program is refused, and a move whose check raises is not
 listed while every other move is."""
@@ -132,18 +132,3 @@ def test_a_transformation_that_exits_is_rolled_back_and_the_session_answers_the_
     assert program(sut) == before and sut.applied == []
     monkeypatch.undo()
     assert answer(sut, "apply_move", move, None).result.status is MoveStatus.APPLIED
-
-
-if __name__ == "__main__":
-    import pathlib
-    import tempfile
-
-    test_an_undone_move_leaves_the_program_its_labels_and_its_record_as_before(pathlib.Path(tempfile.mkdtemp()))
-    test_each_undo_takes_back_one_move_and_none_is_left_after_the_first_move(pathlib.Path(tempfile.mkdtemp()))
-    test_rollback_is_always_a_listed_move_and_takes_the_last_change_back(pathlib.Path(tempfile.mkdtemp()))
-    with pytest.MonkeyPatch.context() as patch:
-        test_a_move_that_builds_an_invalid_program_is_refused_and_undone(pathlib.Path(tempfile.mkdtemp()), patch)
-    with pytest.MonkeyPatch.context() as patch:
-        test_a_transformation_that_exits_is_rolled_back_and_the_session_answers_the_next_move(
-            pathlib.Path(tempfile.mkdtemp()), patch
-        )

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """One MPI rank of ``tests/test_comm_ranks.py``: load a program the parent built, run it on this rank's inputs, and
 save its outputs. ``python comm_rank_runner.py <build folder> <fixture> <output prefix>`` under ``mpirun``."""

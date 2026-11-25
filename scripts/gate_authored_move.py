@@ -1,8 +1,8 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Gate one authored move before it enters the catalogue (``docs/design/transformation-requests.md``): its cluster's
 examples, a fixed point of the cleanup after every application, every site of the corpus kernels against the bench's
-reference, and NestForge's unit suite with the move loaded. The owner's review comes last: the report says
+reference, and Tactics' unit suite with the move loaded. The owner's review comes last: the report says
 ``review: pending`` and the move enters the catalogue only when the owner approves it.
 
     python scripts/gate_authored_move.py candidates/<kind> --examples examples.json \\
@@ -33,7 +33,7 @@ SUITE_MARKERS = "not integration and not judge and not cloudsc and not gpu and n
 
 
 def suite_passes(catalogue: pathlib.Path) -> bool:
-    """NestForge's unit suite with ``catalogue`` loaded in every session it starts."""
+    """Tactics' unit suite with ``catalogue`` loaded in every session it starts."""
     env = os.environ | {CATALOGUE_ENV: str(catalogue)}
     command = [sys.executable, "-m", "pytest", "-q", "-x", "-m", SUITE_MARKERS, "-n", "auto"]
     return subprocess.run(command, cwd=REPO_ROOT, env=env, check=False).returncode == 0

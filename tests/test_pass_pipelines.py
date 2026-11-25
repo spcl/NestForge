@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The LLVM and MLIR baselines: every kernel built through the agent's own pass pipeline, with NestForge's entry,
+"""The LLVM and MLIR baselines: every kernel built through the agent's own pass pipeline, with Tactics' entry,
 library and oracle check; the pipeline's syntax is checked when it is set, and rollback takes it back."""
 
 from pathlib import Path
@@ -66,7 +66,7 @@ def test_a_pipeline_opt_cannot_parse_is_refused_with_opts_message(tmp_path: Path
     assert sut.pipeline is None
 
 
-def test_rollback_takes_the_pipeline_back_to_nestforges_build(tmp_path: Path) -> None:
+def test_rollback_takes_the_pipeline_back_to_tacticss_build(tmp_path: Path) -> None:
     sut = session(tmp_path)
     sut.set_pipeline("llvm", "default<O1>")
 

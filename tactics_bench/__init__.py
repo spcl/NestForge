@@ -1,11 +1,11 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The HPCAgent-Bench columns of NestForge. ``nestforge_reference`` is the column an agent's run is compared against. No
-LLM: the kernel's reference solution (``reference_solutions/<kernel>.py``) picks the moves, NestForge's default moves
+"""The HPCAgent-Bench columns of Tactics. ``tactics_reference`` is the column an agent's run is compared against. No
+LLM: the kernel's reference solution (``reference_solutions/<kernel>.py``) picks the moves, Tactics' default moves
 when the kernel has none, and scopes, placement and code generation run on the same defaults the agent's session uses.
-``nestforge_stub`` and ``nestforge_two_stage`` stand in for an LLM agent in CI, through the tools an agent calls.
+``tactics_stub`` and ``tactics_two_stage`` stand in for an LLM agent in CI, through the tools an agent calls.
 
-A package of its own beside ``nestforge``: it imports HPCAgent-Bench, which no ``nestforge`` module may."""
+A package of its own beside ``tactics``: it imports HPCAgent-Bench, which no ``tactics`` module may."""
 
 import hashlib
 import pathlib
@@ -71,7 +71,7 @@ def applied_journal(applied: Sequence[MoveResult]) -> list[list[object]]:
 
 
 class ReferenceOptimizer(FlavorOptimizer):
-    """Replays the kernel's reference moves (default moves without one), then finalizes on NestForge's defaults. Its
+    """Replays the kernel's reference moves (default moves without one), then finalizes on Tactics' defaults. Its
     plugin record says which it was."""
 
     __slots__ = ()
@@ -89,11 +89,11 @@ class ReferenceOptimizer(FlavorOptimizer):
         script = Script(session)
         solution = reference_solution(task.kernel) if self.references else None
         if solution is None and self.references:
-            print(f"nestforge_reference: {task.kernel} has no reference solution; default moves", file=sys.stderr)
+            print(f"tactics_reference: {task.kernel} has no reference solution; default moves", file=sys.stderr)
         solve = solution.solve if solution is not None else baseline
         solve(script, Context("gpu" if gpu else "cpu", ncores(), preset))
         # the judge reads an episode's library from the episode's folder, the one writable folder under /shared
-        root = self._workdir or pathlib.Path(shared_dir()) / "nestforge"
+        root = self._workdir or pathlib.Path(shared_dir()) / "tactics"
         root.mkdir(parents=True, exist_ok=True)
         out = pathlib.Path(tempfile.mkdtemp(prefix=f"reference-{pathlib.PurePath(task.kernel).name}-", dir=root))
         final = session.finalize(out)
@@ -121,7 +121,7 @@ class ReferenceOptimizer(FlavorOptimizer):
 
 
 class DefaultOptimizer(ReferenceOptimizer):
-    """NestForge's default moves on every kernel, with no model and no reference solution: the floor every
+    """Tactics' default moves on every kernel, with no model and no reference solution: the floor every
     comparison starts from."""
 
     __slots__ = ()
@@ -129,8 +129,8 @@ class DefaultOptimizer(ReferenceOptimizer):
 
 
 class NoWaveOptimizer(DefaultOptimizer):
-    """The canonical form without wavefronts, finished by NestForge's default scopes, placement and code generation:
-    every move family is off, so the default moves stage skews and fuses nothing. Against ``nestforge_default`` it
+    """The canonical form without wavefronts, finished by Tactics' default scopes, placement and code generation:
+    every move family is off, so the default moves stage skews and fuses nothing. Against ``tactics_default`` it
     gives the default moves' gain, the wavefronts included."""
 
     __slots__ = ()
@@ -142,16 +142,16 @@ STUB_MOVES = 3
 
 
 def tool(name: str, kernel: str, /, **args: object) -> dict[str, Any]:
-    """One NestForge tool call as the agent's tool makes it (``POST /nestforge/<name>`` under the episode's identity);
+    """One Tactics tool call as the agent's tool makes it (``POST /tactics/<name>`` under the episode's identity);
     raises with the judge's error."""
-    answer: dict[str, Any] = http_json.post_judge(f"/nestforge/{name}", {**args, "kernel": kernel})
+    answer: dict[str, Any] = http_json.post_judge(f"/tactics/{name}", {**args, "kernel": kernel})
     if "error" in answer:
         raise RuntimeError(f"{name}: {answer['error']}")
     return answer
 
 
 def advance_phase(kernel: str, phase: str) -> None:
-    """End the kernel's phase as the agent's ``advance_phase`` tool does; raises unless NestForge moved it to ``phase``."""
+    """End the kernel's phase as the agent's ``advance_phase`` tool does; raises unless Tactics moved it to ``phase``."""
     step = tool("advance_phase", kernel)["result"]
     if not isinstance(step, dict) or step.get("status") != "moved" or step.get("phase") != phase:
         raise RuntimeError(f"advance_phase, expected {phase}: {step}")
@@ -210,7 +210,7 @@ def write_back(kernel: str, info: dict[str, str]) -> bool:
 
 
 class StubAgent(FlavorOptimizer):
-    """``nestforge_stub``: the benchmark's CI stand-in for an LLM agent on the NestForge packet. Through the packet's
+    """``tactics_stub``: the benchmark's CI stand-in for an LLM agent on the Tactics packet. Through the packet's
     own tools it reads the CPF, applies up to :data:`STUB_MOVES` legal moves picked by a generator seeded by the
     kernel's name (so a run is repeatable), finalizes and returns the library to submit."""
 
@@ -222,8 +222,8 @@ class StubAgent(FlavorOptimizer):
 
 
 class TwoStageStub(FlavorOptimizer):
-    """``nestforge_two_stage``: the stand-in for an LLM agent on the two-stage packet, structured then unstructured.
-    It walks every phase of ``nestforge-full`` through the agent's tools and NestForge's phase gate: the moves
+    """``tactics_two_stage``: the stand-in for an LLM agent on the two-stage packet, structured then unstructured.
+    It walks every phase of ``tactics-full`` through the agent's tools and Tactics' phase gate: the moves
     :class:`StubAgent` applies, one scope, the scoped phase passed, each kernel read, written back unchanged and
     tuned, then finalize. Repeatable for the same reason."""
 

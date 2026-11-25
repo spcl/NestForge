@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """PageRank power iteration on the CPU: each sweep is ``trans @ rank`` and ``sum(rank)``, two library calls the default
 keeps. ``inline-library`` of both (the product into a row-parallel doall with an inner reduction, the sum into a doall

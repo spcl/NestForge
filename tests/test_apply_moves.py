@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``apply_moves``: several moves in order, all or nothing. After each move the program is built and run at the small
 check sizes against the reference; the first move refused or found wrong takes the whole batch back, and the answer

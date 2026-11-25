@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The move catalog the agent reads: every kind with the tree rows it takes and the transformation it runs, and the
 skill page naming every kind."""
@@ -8,7 +8,7 @@ import re
 from tactics.paths import REPO_ROOT
 from tactics.stages.moves import MOVE_SHAPES, move_kinds
 
-PAGE = REPO_ROOT / "plugin" / "tactics" / "skills" / "nestforge" / "SKILL.md"
+PAGE = REPO_ROOT / "plugin" / "tactics" / "skills" / "tactics" / "SKILL.md"
 #: A backticked kebab-case token with one of these parts reads as a move name (``kernel-optimizer`` does not).
 MOVE_WORDS = frozenset(
     {

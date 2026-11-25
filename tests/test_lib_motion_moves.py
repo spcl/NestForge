@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``lib-before`` / ``lib-after`` / ``lib-into``: a library call whose memlets are its whole effect (a ``lib_copy``
 above all, which every copy between two arrays becomes), or a host ``Sync``, moves into a state of its own before or
@@ -475,35 +475,3 @@ def test_a_one_element_copy_is_a_copy_edge_again_once_scopes_are_made(tmp_path: 
 
     assert copy_rows(sut) == []
     assert all("copy" not in kernel.name for kernel in sut.list_kernels())
-
-
-if __name__ == "__main__":
-    import tempfile
-
-    def scratch() -> pathlib.Path:
-        return pathlib.Path(tempfile.mkdtemp())
-
-    test_a_copy_between_arrays_is_a_lib_copy_row_after_canonicalization(scratch())
-    test_a_lib_copy_row_is_a_copy_edge_again_once_scopes_are_made_so_no_kernel_copies(scratch())
-    test_a_one_element_copy_is_a_lib_copy_row_as_its_tasklet(scratch())
-    test_a_loop_invariant_one_element_copy_hoists_out_of_its_loop_and_runs_once(scratch())
-    test_a_one_element_copy_is_a_copy_edge_again_once_scopes_are_made(scratch())
-    test_a_loop_invariant_copy_hoists_out_of_its_loop_and_runs_once(scratch())
-    test_a_loop_whose_trip_count_is_not_proven_positive_keeps_its_copy(scratch())
-    test_a_copy_of_an_array_the_loop_writes_is_not_hoisted(scratch())
-    test_a_copy_read_in_its_loop_is_not_sunk_after_it(scratch())
-    test_a_copy_between_two_loops_moves_ahead_of_them_and_leaves_them_adjacent(scratch())
-    test_a_copy_of_what_a_loop_computes_is_not_moved_ahead_of_that_loop(scratch())
-    test_a_copy_never_moves_into_a_block(scratch())
-    test_a_copy_under_a_condition_does_not_leave_its_branch(scratch())
-    test_a_call_named_with_its_own_state_is_refused(scratch())
-    test_a_call_with_side_effects_never_moves()
-    test_a_copy_joins_an_earlier_state_and_reads_what_that_state_writes(scratch())
-    test_a_call_joins_only_a_state(scratch())
-    test_a_call_does_not_join_a_state_that_accumulates_into_what_it_touches()
-    test_a_call_does_not_join_a_state_with_two_unordered_writes_of_what_it_reads()
-    test_a_host_barrier_moves_ahead_of_host_work_that_touches_no_device_data()
-    test_a_host_barrier_never_crosses_device_work()
-    test_a_host_barrier_joins_a_state_after_its_device_work()
-    test_a_host_barrier_never_joins_ahead_of_device_work()
-    test_a_barrier_inside_a_kernel_never_moves()

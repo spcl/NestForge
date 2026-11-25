@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``hoist-invariant-code``: the agent names a loop or a doall, LoopInvariantCodeMotion
 picks the statements no iteration changes and runs them once, before it."""

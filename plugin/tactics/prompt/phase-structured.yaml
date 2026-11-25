@@ -2,5 +2,5 @@
 # they reach.
 agent:
   insert:
-    - after: nestforge
-      block: {id: nestforge_phase, text: "file:phases/structured.md"}
+    - after: tactics
+      block: {id: tactics_phase, text: "file:phases/structured.md"}

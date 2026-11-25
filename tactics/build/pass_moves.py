@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The MLIR and LLVM agent's moves (``docs/design/mlir-llvm-agent.md``): compiler passes applied one at a time to a
 kernel's unit, each a named move with arguments, MLIR passes first, then LLVM passes on the IR the fixed lowering
@@ -32,8 +32,6 @@ from tactics.build.pipelines import (
 
 #: The tools the moves run, beside the compiler.
 TOOLS = ("cgeist", "polygeist-opt", "mlir-translate", "opt")
-#: The two phases, in order.
-PHASES = ("mlir", "llvm")
 
 
 @dataclass(frozen=True, slots=True)

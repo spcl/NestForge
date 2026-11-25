@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 2 deterministic default (:mod:`tactics.stages.canonicalize`): ``fuse_and_finish`` on a ``canonicalize``d SDFG
 reaches the same fixed point as draining the listed fusion moves -- so the deterministic default and the

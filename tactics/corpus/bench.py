@@ -1,8 +1,8 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""HPCAgent-Bench's kernels as SDFGs, the NestForge corpus. A kernel's ``_dace.py`` reads HPCAgent-Bench's precision
+"""HPCAgent-Bench's kernels as SDFGs, the Tactics corpus. A kernel's ``_dace.py`` reads HPCAgent-Bench's precision
 global, which is set to float64 before it is imported.
-hpcagent_bench is imported inside functions, so importing nestforge never loads it."""
+hpcagent_bench is imported inside functions, so importing tactics never loads it."""
 
 from __future__ import annotations
 

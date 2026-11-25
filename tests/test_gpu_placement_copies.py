@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The host/device copies inserted after placement between two kernels, read off the SDFG without a GPU: a value passed
 between two GPU kernels stays on the device, and a value crossing devices is copied once, in its direction."""
@@ -64,12 +64,3 @@ def test_placing_two_chained_kernels_copies_each_crossing_value_once_and_nothing
     assert sorted(m.arg for m in result.transfers if m.direction == "to_host") == crossing_out
     assert (arrays["t"].storage in GPU_RESIDENT_STORAGES) == (devices[0] == "gpu"), "t lives where it is written"
     session.sdfg.validate()
-
-
-if __name__ == "__main__":
-    import tempfile
-
-    for placement in PLACEMENTS:
-        test_placing_two_chained_kernels_copies_each_crossing_value_once_and_nothing_between_two_gpu_kernels(
-            Path(tempfile.mkdtemp()), *placement
-        )

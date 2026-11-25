@@ -17,13 +17,13 @@ repos:
       - id: ruff-format
   - repo: local
     hooks:
-      - id: nestforge-headers
+      - id: tactics-headers
         name: copyright / SPDX header
         entry: python scripts/check_headers.py --fix
         language: system
         require_serial: true
         files: '\.py$'
-      - id: nestforge-large-files
+      - id: tactics-large-files
         name: block files > 500 KiB
         entry: python scripts/check_large_files.py
         language: system

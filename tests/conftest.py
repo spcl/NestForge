@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The NestForge user plugin, registered with the bench once per test process: the bench registers a plugin's
+"""The Tactics user plugin, registered with the bench once per test process: the bench registers a plugin's
 packets once, so two modules that each cleared its caches and loaded it again would register them twice."""
 
 from collections.abc import Iterator
@@ -18,8 +18,8 @@ PLUGIN = REPO_ROOT / "plugin" / "tactics"
 
 
 @pytest.fixture(scope="session")
-def nestforge_plugin() -> Iterator[tuple[Plugin, ...]]:
-    """Every plugin the bench found with NestForge's folder as the user plugin dir, packets, routes and tools loaded."""
+def tactics_plugin() -> Iterator[tuple[Plugin, ...]]:
+    """Every plugin the bench found with Tactics' folder as the user plugin dir, packets, routes and tools loaded."""
     with pytest.MonkeyPatch.context() as patch:
         patch.setenv("HPCAGENT_BENCH_USER_PLUGIN_DIRS", str(PLUGIN))
         plugins.register_once.cache_clear()

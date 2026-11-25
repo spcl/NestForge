@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Regressions of a review of the session, its server, the replay and the corpus loader, each on a tiny kernel."""
 
@@ -135,7 +135,7 @@ def test_a_stale_generated_program_is_regenerated() -> None:
 def test_a_module_that_fails_to_import_is_not_cached(tmp_path: Path) -> None:
     broken = tmp_path / "broken_dace.py"
     broken.write_text("raise RuntimeError('half-run')\n")
-    kernel = CorpusKernel("broken", "nestforge_test_broken_dace", broken, corpus_kernel("tsvc_2_s000").spec)
+    kernel = CorpusKernel("broken", "tactics_test_broken_dace", broken, corpus_kernel("tsvc_2_s000").spec)
 
     for _ in range(2):  # the second import runs the file again, not a half-run module
         with pytest.raises(RuntimeError, match="half-run"):
@@ -163,6 +163,6 @@ def test_a_tuned_kernel_is_journaled_and_repeated_by_a_fresh_session(stub: Stub)
 
     post("view_tree", "episode-tuned")
 
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     assert [tool for tool, _ in route.journal_of("episode-tuned", KERNEL)] == ["write_kernel", "tune_kernel"]
     assert [tool for tool, _ in stub.calls[before:]] == ["write_kernel", "tune_kernel", "view_tree"]

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Every legal move of a communication row keeps what every rank computes: each fixture of
 ``tests/comm_rank_programs.py`` is canonicalized, every ``lib-before`` and ``lib-after`` the session lists for a
@@ -35,6 +35,10 @@ RUN_TIMEOUT_S = 300
 NEEDS_TWO = frozenset({"ring"})
 #: The fixtures with a blocking row that has a start-and-wait form.
 SPLITTABLE = ("redistribute", "residual_loop", "ring")
+#: The fixtures every legal move runs on across ranks. Left out, as a larger fixture runs the same pattern and the
+#: analysis tests check each statically: halo_waitall (halo_overlap), halo_steps and residual_loop (jacobi_rows),
+#: halo_stencil (halo_rows; both run in the overlapped-stencil tests).
+MOVED = sorted(set(FIXTURES) - {"halo_waitall", "halo_steps", "residual_loop", "halo_stencil"})
 #: The most cuts ``split-doall`` lists on one stencil: its first and its last row.
 MAX_CUTS = 2
 
@@ -120,7 +124,7 @@ def outputs_match_on_every_rank(name: str, base: dace.SDFG, moved: list[tuple[st
                     assert np.array_equal(expected[output], actual[output]), (label, count, rank, output)
 
 
-@pytest.mark.parametrize("name", sorted(FIXTURES))
+@pytest.mark.parametrize("name", MOVED)
 def test_every_legal_move_of_a_communication_row_keeps_every_ranks_outputs(name: str, tmp_path: Path) -> None:
     base, moved = moved_programs(name)
     # the fixtures leave the rows somewhere to go, so this checks moves, not an empty list

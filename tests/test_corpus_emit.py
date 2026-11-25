@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Emit Python for real corpus kernels and check they compute what the kernel computes.
 
@@ -486,6 +486,7 @@ def test_jacobi_1d_loopregion_emits_and_computes() -> None:
     np.testing.assert_array_equal(call["B"], Br)
 
 
+# Reproducer: corpus loader took a helper (relu) as mlp's program (bench afcccb7)
 def test_corpus_program_is_the_entry_not_a_helper() -> None:
     # mlp_dace defines relu, softmax, then mlp; every kernel's entry is named for the kernel (bench afcccb7).
     assert corpus_kernel("machine_learning/mlp/mlp").program().name.endswith("mlp")

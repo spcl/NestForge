@@ -1,11 +1,11 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Attribute a finished run's speedup to its moves and their families by replay: the journal is replayed one call at
 a time on the run's kernel, the program is measured after every prefix with the remaining phases on their defaults,
 and each call's ratio to the prefix before it is its share, in the order the agent applied it. Builds only, no tokens.
 
     python scripts/attribute_moves.py --journal journal.jsonl --kernel jacobi_2d --preset S --out attribution.json
-    python scripts/attribute_moves.py --db results.db --setup nestforge-llr --episode <label> --kernel jacobi_2d \\
+    python scripts/attribute_moves.py --db results.db --setup tactics-llr --episode <label> --kernel jacobi_2d \\
         --preset S --out attribution.json
 
 The replay stops at the first ``write_kernel``: the record keeps a kernel's source as its hash, so every call from
@@ -42,9 +42,9 @@ def journal_from_db(db: pathlib.Path, setup: str, episode: str, kernel: str) -> 
     # deferred: only this way of reading needs the bench's statistics
     from hpcagent_bench.stats import plugin_records
 
-    kept = plugin_records.load(db, setup=setup, episode=episode, plugin="nestforge")
+    kept = plugin_records.load(db, setup=setup, episode=episode, plugin="tactics")
     if not kept:
-        raise SystemExit(f"no nestforge record of {episode} in {db}")
+        raise SystemExit(f"no tactics record of {episode} in {db}")
     data = kept[-1].record.data
     if not isinstance(data, dict) or data.get("kernel") != kernel:
         raise SystemExit(f"the record of {episode} is not of kernel {kernel}")

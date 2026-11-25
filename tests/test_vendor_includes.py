@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A kernel calling a vendor library whose headers sit off the default search path (a module or spack OpenBLAS)
 compiles with that library's ``-I``: on such a machine expanding one of pagerank's or atax's calls left a kernel

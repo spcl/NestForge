@@ -1,10 +1,9 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Unrolling moves (a loop or an outermost doall of a constant trip count, up to the agent's cap) and
 ``propagate-config``, which specializes the program for argument values behind a dispatch on them."""
 
 import pathlib
-import tempfile
 from pathlib import Path
 
 import dace
@@ -283,23 +282,3 @@ def test_a_script_unrolls_with_the_cap_its_move_carries_and_records_it(tmp_path:
 
     assert done.max_iterations == 19
     assert not labels_of(sut.session, LoopRegion)
-
-
-if __name__ == "__main__":
-    for test in (
-        test_a_constant_loop_unrolls_into_one_body_copy_per_iteration,
-        test_a_loop_longer_than_the_cap_is_refused_and_unrolls_under_a_larger_cap,
-        test_a_loop_of_symbolic_trip_count_is_refused,
-        test_a_constant_doall_unrolls_into_one_body_copy_per_iteration,
-        test_a_doall_longer_than_the_cap_is_refused_and_unrolls_under_a_larger_cap,
-        test_a_doall_of_symbolic_range_is_refused,
-        test_a_doall_linked_to_another_computation_of_its_state_is_refused,
-        test_propagate_config_is_offered_on_no_row_only_when_there_is_a_value_to_give,
-        test_propagate_config_dispatches_to_a_specialized_body_whose_constant_loop_then_unrolls,
-        test_propagate_config_keeps_the_signature_and_the_codegen_flags,
-        test_propagate_config_without_values_with_unknown_names_or_values_dace_refuses_is_illegal,
-        test_propagate_config_is_closed_once_the_program_has_kernels,
-        test_undo_takes_propagate_config_back_to_the_program_before_it,
-        test_a_script_unrolls_with_the_cap_its_move_carries_and_records_it,
-    ):
-        test(pathlib.Path(tempfile.mkdtemp()))

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``get_performance`` never loses a measured program to a slower one: a correct program more than
 :data:`GUARD_MARGIN` slower than the fastest version measured is rolled back to that version."""

@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Walk an HPCAgent-Bench kernel through the seven NestForge stages, one Session call each, and save what each
+"""Walk an HPCAgent-Bench kernel through the seven Tactics stages, one Session call each, and save what each
 stage made. Every stage runs its deterministic default; an agent drives the same stages through the HPCAgent-Bench
 plugin (``plugin/tactics``).
 

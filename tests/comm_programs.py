@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Programs that communicate between MPI ranks, the fixtures of docs/design/comm-nodes.md: a halo exchange with
 nonblocking calls, a residual reduced across ranks every time step, a ring of blocking calls in a loop, and a loop of

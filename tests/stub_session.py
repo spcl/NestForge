@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A stand-in for the judge's session process: every tool answers a predefined reply, so the route, the agent tools
 and a scripted agent are tested without DaCe. :func:`install` swaps it into the loaded route module."""
@@ -31,7 +31,7 @@ REPLIES: dict[str, Reply] = {
     "tune_kernel": Reply(result=Sweep(kernel="kernel_0", cells=4, winner="gcc-O3", config=None)),
     "get_performance": Reply(result=None),
     "applied_moves": Reply(result=[]),
-    "finalize": Reply(result={"library": "/shared/nestforge/libfuse_diamond.so", "workspace_bytes": "0"}),
+    "finalize": Reply(result={"library": "/shared/tactics/libfuse_diamond.so", "workspace_bytes": "0"}),
 }
 
 #: Seconds a stub start and a stub call take, so concurrent requests overlap unless the route serializes them.
@@ -94,7 +94,7 @@ class StubSession:
 
 
 def install(monkeypatch: pytest.MonkeyPatch, stub: Stub) -> Stub:
-    """Serve every NestForge session of the loaded route from ``stub`` until ``monkeypatch`` undoes it."""
-    route = sys.modules[ROUTES["nestforge"].handler.__module__]
+    """Serve every Tactics session of the loaded route from ``stub`` until ``monkeypatch`` undoes it."""
+    route = sys.modules[ROUTES["tactics"].handler.__module__]
     monkeypatch.setattr(route, "SessionProcess", lambda setup: StubSession(stub, setup))
     return stub

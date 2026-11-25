@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Session.set_scope: one kernel over regions no scheduling move fuses, so the kernel written in stage 5 fuses
 them instead."""
@@ -431,6 +431,7 @@ def test_a_map_and_the_library_call_after_it_become_one_kernel_that_computes_the
     np.testing.assert_allclose(actual, (A * 2.0) @ B, rtol=1e-12)
 
 
+# Reproducer: unset_scope left an invalid nested SDFG (#97, fuzz seed 1702)
 def test_unsetting_a_kernel_whose_body_stays_nested_leaves_a_valid_program(tmp_path: Path) -> None:
     """Issue #97 (the fusion fuzz program of seed 1702): one doall scoped and unset again. The kernel's body is not
     inlined; the nested SDFG that stays keeps its arguments, named as the connectors (``_out_...``), non-transient."""
@@ -464,6 +465,7 @@ def test_naming_an_empty_state_is_refused_and_changes_nothing(tmp_path: Path) ->
     assert content_of(session.sdfg) == before and not external_calls(session.sdfg)
 
 
+# Reproducer: scoped step state dropped the scalar an edge reads (#111, cg)
 def test_a_scoped_state_keeps_the_scalar_the_convergence_test_after_it_reads(tmp_path: Path) -> None:
     """spcl/tactics#111: ``cg``'s step state writes ``sqrt_rsnew`` and the edge after it tests it; the kernel the state
     becomes still writes it where the edge reads it, so the program validates after the scopes are finalized."""

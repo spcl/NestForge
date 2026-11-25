@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Move families: fixed sets of move kinds a run can switch off as a whole, and the unit the replay attribution sums
 a run's speedup by. The table is the single source; a test keeps it in step with the move kinds."""

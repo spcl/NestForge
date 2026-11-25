@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Stage 4: parallel kernels go to the GPU target, sequential ones stay on the CPU, an agent may choose per kernel,
 and the kernel DAG names the transfers each placement implies. A GPU kernel is offloaded inside its call; inserting the

@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """What keeps a dozen agents moving on one judge: a library call keeps its implementation from the first call to the
 oracle, the oracle's cost is bounded, a long call's work survives its stop, and feedback rebuilds only what changed."""

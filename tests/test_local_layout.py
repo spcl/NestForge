@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """``relayout`` on arrays the program makes itself: laid out in place, at any point, without a bench request; ``zip``
 and ``unzip`` (array of structs, struct of arrays) too, since no argument list changes."""

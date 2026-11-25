@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The configuration sweep: what it enumerates, how a build shared by several cells is measured once and gated per
 cell, and that the winning ``lib<kernel>.a`` links into the parent program and computes the right answer."""

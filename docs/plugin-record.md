@@ -2,15 +2,15 @@
 
 [Overview](../README.md) · [Code map](README.md) · [Stages](stages.md)
 
-Every finished NestForge episode leaves one record that says what the agent called, what each call did, and why a
+Every finished Tactics episode leaves one record that says what the agent called, what each call did, and why a
 refused call changed nothing. Two numbers of the study come from it through one script: how often calls were refused
 and why, and how many tokens an agent spent before and after it first wrote kernel code.
 
 ## Where it comes from
 
-The judge route (`plugin/tactics/routes/nestforge.py`) logs every call that reaches it, the refused and the failed
+The judge route (`plugin/tactics/routes/tactics.py`) logs every call that reaches it, the refused and the failed
 included, in `calls-<episode>@<kernel>.jsonl` beside the journal. At every `finalize` it writes the record with the
-bench's `plugin_api.keep_record` into the episode's folder, as `plugin_records/nestforge.json`. A graded submission
+bench's `plugin_api.keep_record` into the episode's folder, as `plugin_records/tactics.json`. A graded submission
 always follows a `finalize`, and the bench archives the file with each `/submit` grade, so the record of a grade holds
 the episode up to that grade.
 
@@ -46,7 +46,7 @@ The shape:
 | `tokens` | the agent's cumulative tokens when it made the call; the bench sends them with every judge call |
 | `family` | the move's [family](move-families.md), `null` for a call that is not a move |
 | `disabled_families` | the families the run switched off ([move-families.md](move-families.md)) |
-| `reference` | whether the `nestforge_reference` column replayed a reference solution (`false`: the kernel has none, so it ran the default moves); `null` for every other column |
+| `reference` | whether the `tactics_reference` column replayed a reference solution (`false`: the kernel has none, so it ran the default moves); `null` for every other column |
 | `journal` | the changes that made the program, with their arguments; a written kernel's source as `sha256:<digest>` |
 | `first_write_kernel` | the `index` of the first `write_kernel` call, or `null` |
 | `final` | the number of kernels the finalized program has |

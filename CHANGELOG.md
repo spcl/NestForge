@@ -4,16 +4,26 @@
 
 ### Added
 
-- **Pass-move agent** (`nestforge-passes`, [design](docs/design/mlir-llvm-agent.md)): MLIR moves on the affine loops
+- **Pass-move agent** (`tactics-passes`, [design](docs/design/mlir-llvm-agent.md)): MLIR moves on the affine loops
   Polygeist raises from each CPU kernel, then LLVM moves on the IR the fixed lowering writes, one named pass at a
   time (cgeist at -O2, so the unit's index helpers are inlined and its accesses affine); `view_ir` shows the loops
   after each move, a move that changes nothing or fails is refused, and rollback takes
   a move back. GPU kernels wait on the bench image's MLIR CUDA runtime (bench request B16). On a kernel whose sizes
   are runtime arguments, cgeist multiplies each index by the row length, which MLIR's analyses cannot see through:
   tiling and unrolling apply there, `parallelize` and most other MLIR moves change nothing.
+- **MCP server** (`tactics-mcp KERNEL`, `tactics.mcp_server`): every tool as an MCP tool over stdio, for any MCP
+  client. Each tool's input schema comes from its pydantic model (`tactics.wire`), its hints (read-only, destructive)
+  from its effect; calls run in the isolated session process the bench judge uses. Needs `mcp>=2.3`.
 
 ### Fixed
 
+- A later placement (another `run-on-*`, a move inside the kernel) no longer drops `stage-loads-shared`,
+  `copy-to-tma` or `set-pipeline-depth`: each kernel's device moves are made again on its placed body.
+  `set-schedule-gpu` and staging refuse each other on the same kernel only (both set the thread block); before, any
+  staged kernel blocked GPU schedules on every kernel.
+- Replay picks and applies moves inside a kernel (`Script.pick(kind, scope=...)`, `Script.apply(move, scope=...)`),
+  also after `finish()`, so a solution can replay `set-schedule-*`.
+- `scripts/run_statistics.py` no longer counts a forced move that a later `rollback` took back.
 - `set_scope` on a solver's step state left a scalar the kernel takes read by an interstate edge (#111).
 - `set-schedule-gpu` with a block shorter than the doall's rank pads it with ones, as CUDA reads `dim3` (#112).
 - `run-on-gpu-persistent` sets the megakernel's block size on the loops it keeps, so the render no longer conflicts
@@ -23,11 +33,14 @@
   Pereira Ribeiro, #115).
 - The MLIR baseline builds again in the judge image: cgeist gets the compiler's builtin headers (`stddef.h`), and
   the example pipelines nest function passes under `func.func`.
-- `srad`'s default program fails to build with DaCe extended 1.0.0 (CPF declares no `tmp61` in its loop kernel);
-  DaCe extended 1.0.1 fixes it, and tactics requires it (#114).
+- `srad`'s default program failed to build with DaCe extended 1.0.0 (CPF declared no `tmp61` in its loop kernel);
+  DaCe extended 1.0.2 fixes it, and tactics requires it (#114).
 
 ### Changed
 
+- The bench plugin is named `tactics` everywhere, as HPCAgent-Bench 1.0.2 expects: plugin name, judge route
+  `/tactics/<tool>`, packets `tactics` and `tactics-*`, optimizers `*_tactics_*`, settings `TACTICS_*` (were
+  `NESTFORGE_*`) and the record file `tactics.json`. Runs made before keep their `nestforge` names.
 - `list_moves` copies only the containers a candidate's scope touches when it probes snapshot reads: the CloudSC
   listing takes about a fifth of its former time.
 - The cleanup after a move leaves out DaCe extended 1.0.1's `ForwardCopyMaps`, which would undo the snapshot copies

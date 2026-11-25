@@ -1,6 +1,6 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""NestForge's own phases: ``next_phase`` runs the defaults of the phases between, ``prev_phase`` takes the current
+"""Tactics' own phases: ``next_phase`` runs the defaults of the phases between, ``prev_phase`` takes the current
 phase back completely, ``goto_phase`` returns to an earlier one, and every tool works only in its phases."""
 
 import dace

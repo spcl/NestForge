@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Cluster the transformation requests a round of episodes recorded, for the authoring step between rounds
 (``docs/design/transformation-requests.md``): requests that share an example pair after canonicalization, up to the

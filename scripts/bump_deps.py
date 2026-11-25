@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Point a checkout at the tip of a HPCAgent-Bench branch (:data:`BENCH_BRANCH` unless one is named) in place of the
 PyPI release: writes ``hpcagent-bench`` into pyproject.toml's ``[tool.uv.sources]`` (adding the table when absent),
@@ -16,7 +16,7 @@ from pathlib import Path
 # not tactics.paths: importing tactics loads DaCe, which a fresh checkout has not installed yet
 PYPROJECT = Path(__file__).resolve().parents[1] / "pyproject.toml"
 BENCH = "https://github.com/spcl/HPCAgent-Bench.git"
-#: The bench branch NestForge tracks.
+#: The bench branch Tactics tracks.
 BENCH_BRANCH = "main"
 
 

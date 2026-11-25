@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The accumulation length ``l`` of each output of a kernel: how many terms the kernel folds into one element, the
 ``l`` of HPCAgent-Bench's reassociation floor ``eps_acc * sqrt(l)``. The bench derives it per program output from

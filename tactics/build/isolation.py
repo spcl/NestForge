@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Run generated code in a child process, so a crash or a runaway loop becomes a :class:`Failure` instead of
 taking down the caller. A child's answer is a :class:`Result` model, validated when it crosses back."""
@@ -44,8 +44,8 @@ OPENMP_REGISTRATION = "/dev/shm/__KMP_REGISTERED_LIB_{pid}_{uid}"
 PIPE_CHUNK = 65536
 
 #: Set in a session that holds agent code, to the folder its builds and runs keep; the bench's seal hides the rest of
-#: what the judge can read. Unset, nothing is sealed: everything else that runs is code NestForge generated.
-SEAL_KEEP_ENV = "NESTFORGE_SEAL_KEEP"
+#: what the judge can read. Unset, nothing is sealed: everything else that runs is code Tactics generated.
+SEAL_KEEP_ENV = "TACTICS_SEAL_KEEP"
 
 
 @dataclass(slots=True)
@@ -206,7 +206,7 @@ def spawned_result(receiver: Any, child: Any, timeout: float) -> Any:
 
 
 def spawned_entry(target: Callable[[Any], Result], payload: Any, sender: Any, cpus: set[int]) -> None:
-    """The spawned child's body, on the CPUs NestForge chose (``cpus``); a Python exception comes back as an error."""
+    """The spawned child's body, on the CPUs Tactics chose (``cpus``); a Python exception comes back as an error."""
     faulthandler.disable()  # a child's segfault must not dump the parent's stack
     try:
         pin_cpus(cpus)
@@ -235,7 +235,7 @@ def run_isolated[T: Result](work_fn: Callable[[], T], result: type[T], timeout: 
                 os.close(r)
                 faulthandler.disable()  # a child's segfault must not dump the parent's stack
                 # an initialized libomp's fork handler widens the child to its own first mask, and its binding of the
-                # caller narrows the caller's: the child takes the mask NestForge chose (CHILD_CPUS), whatever OpenMP did
+                # caller narrows the caller's: the child takes the mask Tactics chose (CHILD_CPUS), whatever OpenMP did
                 pin_cpus(cpus)
                 enter_seal()
                 payload = work_fn().model_dump_json()

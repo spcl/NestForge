@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """bench_data: the bench's inputs and reference outputs, named as the generated program names them."""
 
@@ -47,6 +47,7 @@ def test_a_missing_kernelbench_reference_names_the_setting_that_points_at_one(
     assert KERNELBENCH_DIR_VAR in capsys.readouterr().err
 
 
+# Reproducer: kernel without KernelBench data had no grading reference (#85)
 def test_a_kernel_the_bench_cannot_grade_is_graded_against_its_numpy_function(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

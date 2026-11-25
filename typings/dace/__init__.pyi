@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 # DaCe ships no types. This stub types only ``dace.program``, so a ``@dace.program`` kernel stays a typed function to
 # mypy; every other name of DaCe, and every submodule, stays Any.

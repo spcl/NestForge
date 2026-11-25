@@ -1,10 +1,10 @@
 ## MLIR and LLVM pass moves
-Your setup builds the program with NestForge, and your controls are compiler passes, applied one at a time as named
+Your setup builds the program with Tactics, and your controls are compiler passes, applied one at a time as named
 moves to every kernel. You work in two phases. In the MLIR phase, each kernel's C++ is lowered by cgeist to affine
 MLIR and your moves run on its loops; `advance_pass_phase` then lowers it to LLVM IR with a fixed lowering, and your
-LLVM moves run on that IR before the back end. NestForge applies no move of its own.
+LLVM moves run on that IR before the back end. Tactics applies no move of its own.
 
-1. `get_cpf` and `view_tree` show the program; `get_performance` times it with NestForge's default build.
+1. `get_cpf` and `view_tree` show the program; `get_performance` times it with Tactics' default build.
 2. `score` the program as it is.
 3. `view_ir` prints one row per loop of every kernel; `list_pass_moves` lists the moves of your phase and their
    arguments.

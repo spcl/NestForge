@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Harris corner response on the GPU: the default keeps the gradient stencil and the 3x3 box sums in two kernels,
 with ``Ixx``, ``Iyy`` and ``Ixy`` written to memory and read back at 9 offsets. Fusing every producer into the

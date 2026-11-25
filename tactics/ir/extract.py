@@ -1,4 +1,4 @@
-# Copyright 2021 ETH Zurich and the NestForge authors.
+# Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Outline a map nest or a control-flow nest into a standalone SDFG with DaCe's nesting helpers. :class:`Boundary`
 records its data and symbols and the nested SDFG node that stage 3 replaces with an ``ExternalCall``."""
