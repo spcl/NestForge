@@ -109,3 +109,35 @@ jobs:
           pytest -m "not cloudsc and not gpu and not vendor" -n auto --timeout=900 \
             tests/test_bench_plugin.py tests/test_corpus_emit.py tests/test_manifest_signature.py \
             tests/test_abi_order.py tests/test_import_isolation.py tests/test_session_process.py
+
+  # Tactics as a bench user plugin, as the bench's former user-plugins job ran it: the bench checked out at a release
+  # tag as the workspace root (its setup action syncs its own uv.lock), tactics installed by the plugin's [install]
+  # command, then every episode of plugin.toml's [ci] block run against a judge that must grade the submission correct.
+  bench-plugin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      BENCH_TAG: v1.0.2
+      PYTHON_VERSION: '3.14'
+      PYTHONHASHSEED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: spcl/HPCAgent-Bench
+          ref: ${{ env.BENCH_TAG }}
+          submodules: recursive
+      - uses: actions/checkout@v4
+        with:
+          path: tactics
+      - uses: ./.github/actions/setup
+      - name: Install the plugin and check that it loads
+        run: |
+          dirs="$GITHUB_WORKSPACE/tactics/plugin/tactics"
+          echo "HPCAGENT_BENCH_USER_PLUGIN_DIRS=$dirs" >> "$GITHUB_ENV"
+          HPCAGENT_BENCH_USER_PLUGIN_DIRS="$dirs" python -m hpcagent_bench.plugins install
+          HPCAGENT_BENCH_USER_PLUGIN_DIRS="$dirs" python -m hpcagent_bench.plugins check
+      - name: Stub episodes and every packet's prompts
+        timeout-minutes: 40
+        run: |
+          python -m pytest -p no:cacheprovider -p tests.no_silent_skips -rfEs -v --timeout=1800 --durations=0 \
+            -m user_plugins tests/test_user_plugin_episodes.py
