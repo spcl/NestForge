@@ -3,7 +3,7 @@
 Tactics (formerly Tactics) lets an agent optimize a DaCe program only through legal, checked moves. A tactic is a
 transformation rule (`tile-for`, `interchange-for`, `doall-fusion`, ...); a move applies one tactic to labeled rows
 with its arguments; the ordered moves of an episode are its recipe, which replays the result. Install it with
-`pip install tactics` and import it as `tactics`.
+`pip install dace-tactics` (PyPI refuses the name `tactics`) and import it as `tactics`.
 
 Tactics optimizes whole DaCe programs on CPU and GPU. It canonicalizes a program, reshapes its loop nests with
 legal moves, cuts it into kernels, places each kernel on a device, builds and sweeps each kernel, and reports what
@@ -139,7 +139,7 @@ The [skill page](plugin/tactics/skills/tactics/SKILL.md) has the full vocabulary
 From PyPI (DaCe extended comes as `dace-extended`, imported as `dace`):
 
 ```bash
-pip install tactics
+pip install dace-tactics
 ```
 
 From a checkout of https://github.com/spcl/tactics:

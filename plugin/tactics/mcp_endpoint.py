@@ -62,7 +62,7 @@ def mcp_answer(judge: Judge, request: RouteRequest, call: ToolCall) -> Outcome:
         result: dict[str, Any] = {
             "protocolVersion": params.get("protocolVersion") or PROTOCOL,
             "capabilities": {"tools": {}},
-            "serverInfo": {"name": "tactics", "version": version("tactics")},
+            "serverInfo": {"name": "tactics", "version": version("dace-tactics")},
         }
     elif method == "ping":
         result = {}

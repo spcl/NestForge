@@ -74,7 +74,7 @@ def server(session: SessionProcess) -> Server:
 
     return Server(
         "tactics",
-        version=version("tactics"),
+        version=version("dace-tactics"),
         instructions=INSTRUCTIONS,
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,

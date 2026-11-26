@@ -42,8 +42,8 @@ The first release on PyPI.
 
 - Requires DaCe extended 1.0.2 (`dace-extended>=1.0.2`): it fixes `srad`'s build (#114), and 1.0.1 broke the CloudSC
   canonicalization.
-- `pip install tactics` no longer pulls HPCAgent-Bench: the bench hosts tactics as a plugin and loads it. The
-  functions that grade, finalize or emit the bench corpus import it; install it with `pip install "tactics[bench]"`
+- `pip install dace-tactics` no longer pulls HPCAgent-Bench: the bench hosts tactics as a plugin and loads it. The
+  functions that grade, finalize or emit the bench corpus import it; install it with `pip install "dace-tactics[bench]"`
   (a checkout: `uv sync --extra bench --group dev`).
 - The bench plugin is named `tactics` everywhere, as HPCAgent-Bench 1.0.2 expects: plugin name, judge route
   `/tactics/<tool>`, packets `tactics` and `tactics-*`, optimizers `*_tactics_*`, settings `TACTICS_*` (were
@@ -85,7 +85,7 @@ rows of the program, and the ordered moves of an episode are its recipe, which r
 ### Install
 
 ```bash
-pip install tactics          # DaCe extended comes as dace-extended (import dace)
+pip install dace-tactics          # DaCe extended comes as dace-extended (import dace)
 ```
 
 From a checkout of https://github.com/spcl/tactics, every dependency comes at its pinned commit:
@@ -95,5 +95,5 @@ uv sync --group dev
 ```
 
 The agent plugin (`plugin/tactics`) ships with the checkout, not the wheel: point `HPCAGENT_BENCH_USER_PLUGIN_DIRS` at
-it. The relayout move's SDFG cast needs FP-Arena: `pip install "tactics[fparena]"`.
+it. The relayout move's SDFG cast needs FP-Arena: `pip install "dace-tactics[fparena]"`.
 Tactics requires Python 3.12 or newer and Linux.

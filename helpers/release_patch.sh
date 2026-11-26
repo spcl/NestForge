@@ -51,7 +51,7 @@ import tomllib
 import urllib.error
 import urllib.request
 
-OURS = ["dace-extended", "dace-fortran", "fp-arena", "dace-relayout", "dace-alloy", "tactics", "hpcagent-bench"]
+OURS = ["dace-extended", "dace-fortran", "fp-arena", "dace-relayout", "dace-alloy", "dace-tactics", "hpcagent-bench"]
 path = pathlib.Path("pyproject.toml")
 text = path.read_text()
 own = tomllib.loads(text)["project"]["name"]

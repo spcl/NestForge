@@ -3,7 +3,7 @@ requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tactics"
+name = "dace-tactics"
 version = "0.1.1"
 description = "Reproducible transformation-based agents and a harness for DaCe: tactics applied as legal moves, replayed as recipes."
 readme = "README.md"
