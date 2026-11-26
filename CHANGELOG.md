@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.2 (2026-11-26)
+
+- Publish on PyPI as dace-tactics: PyPI refuses the name tactics (a868199)
+
 ## 0.1.1 (2026-11-26)
 
 The first release on PyPI.
