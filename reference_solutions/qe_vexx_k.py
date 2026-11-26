@@ -8,6 +8,7 @@ nesting that once mapped an unused symbol into a nested graph) replayed against 
 from tactics.replay import Context, Script
 
 KERNEL = "qe_vexx_k"
+CI_SKIP = "a full application: its replay takes 7 to 17 minutes on a CI runner; the replay job covers the moves on smaller kernels"
 CONFIGS = (Context("cpu", 72, "M"),)
 
 

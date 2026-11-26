@@ -1,6 +1,7 @@
 # Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""The Tactics tools on the agent side: each a thin ``POST /tactics/<tool>`` (DaCe lives in the judge)."""
+"""The agent side of Tactics: submit, score and profile. The other tools come from the judge's ``POST /tactics/mcp``
+([judge_mcp] in plugin.toml); these three finalize the session's program first, so they stay here."""
 
 import os
 from collections.abc import Callable
@@ -10,7 +11,7 @@ import pydantic
 from hpcagent_agent.tools import http_json, profile_tool, score, submit
 from hpcagent_agent.tools.registry import Hints, Setup, Spec, tool
 from hpcagent_bench_plugins.tactics.answers import agent_answer, profile_answer, score_answer
-from hpcagent_bench_plugins.tactics.wire import AGENT_PHASES_ENV, MOVE_DEFAULTS, ROUTE, TOOLS, Effect, NoArgs
+from hpcagent_bench_plugins.tactics.wire import AGENT_PHASES_ENV, MOVE_DEFAULTS, ROUTE, Effect, NoArgs
 
 #: The MCP annotations of each effect. Every call reaches only the judge's own Tactics session.
 HINTS = {
@@ -57,14 +58,6 @@ def rendered(
         return render(run(payload))
 
     return answer
-
-
-for name, entry in TOOLS.items():
-    spec = Spec(
-        f"[{entry.label}] {entry.description}", entry.args, f"- `{name}` -- {entry.description}", HINTS[entry.effect]
-    )
-    # in blind mode no tool answers how the program does
-    tool(spec=spec, core=False, name=name, preview=name == "get_performance")(poster(name))
 
 
 def delivering(

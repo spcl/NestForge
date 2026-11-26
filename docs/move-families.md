@@ -46,8 +46,8 @@ agent = ["scopes", "kernels", "codegen"]
 env = { ..., TACTICS_DISABLED_FAMILIES = "all" }
 ```
 
-The session lives in the judge's process, and a packet's `env` reaches only the agent's tools. The agent-side tool
-wrapper (`plugin/tactics/tools/tactics.py`) therefore sends the variable as `disabled_families` with every call.
+The session lives in the judge's process, and a packet's `env` reaches only the agent's tools. The `[judge_mcp]`
+block of `plugin/tactics/plugin.toml` therefore sends the variable as `disabled_families` in every call's `_meta`.
 The route fixes the value at the episode's first call, refuses a later call that names other families, and writes the
 families into the plugin record. The agent has no shell under the packet, and the field is not a tool argument.
 

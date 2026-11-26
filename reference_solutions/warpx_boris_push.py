@@ -12,6 +12,7 @@ alternated rounds 1.59-1.60x, measured on 690de2f with the single move that is n
 from tactics.replay import Context, Script
 
 KERNEL = "warpx_boris_push"
+CI_SKIP = "a full application: its replay takes 7 to 17 minutes on a CI runner; the replay job covers the moves on smaller kernels"
 CONFIGS = (Context("cpu", 72, "L"),)
 
 

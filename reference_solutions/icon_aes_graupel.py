@@ -10,6 +10,7 @@ preset M, 72 threads, on c2daa40, job 5256868)."""
 from tactics.replay import Context, Script
 
 KERNEL = "icon_aes_graupel"
+CI_SKIP = "a full application: its replay takes 7 to 17 minutes on a CI runner; the replay job covers the moves on smaller kernels"
 CONFIGS = (Context("cpu", 72, "M"),)
 
 

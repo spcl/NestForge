@@ -8,6 +8,14 @@ api = 1
 
 # The packages tactics, tactics_bench and reference_solutions, built from the repository into the judge's
 # interpreter; their dependencies are the benchmark's own, at its pins.
+# Every tool but submit, score and profile is served by the judge route POST /tactics/mcp; the agent's MCP server
+# lists it there. Each call carries the packet's move families and agent phases in params._meta; blind mode withholds
+# get_performance.
+[judge_mcp]
+route = "tactics/mcp"
+meta = { disabled_families = "TACTICS_DISABLED_FAMILIES", agent_phases = "TACTICS_AGENT_PHASES" }
+preview = ["get_performance"]
+
 [install]
 root = "../.."
 command = ["uv", "pip", "install", "--python", "{python}", "--no-deps", "{root}"]

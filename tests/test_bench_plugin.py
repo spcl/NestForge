@@ -29,6 +29,7 @@ import numpy as np
 import pytest
 from anthropic.types import Message
 from dace.codegen.common import get_gpu_backend
+from hpcagent_agent import judge_mcp
 from hpcagent_agent import plugins as agent_plugins
 from hpcagent_agent.driver import agent_driver
 from hpcagent_agent.harness import run_anthropic, runner_common, subagents
@@ -160,10 +161,28 @@ def stub(loaded: None, monkeypatch: pytest.MonkeyPatch) -> Iterator[Stub]:
         episodes.drop(episode)
 
 
-def test_every_phase_registers_its_tools(loaded: None) -> None:
-    names = {"get_cpf", "apply_move", "set_scope", "list_kernels", "write_kernel", "tune_kernel", "get_performance"}
-    assert names <= registry.REGISTRY.keys()
-    assert all(not registry.REGISTRY[name].core for name in names)
+@pytest.fixture
+def over_mcp(loaded: None, tactics_plugin: tuple[Plugin, ...], monkeypatch: pytest.MonkeyPatch) -> None:
+    """The judge's tools registered as the agent's MCP server registers them (``[judge_mcp]``): the listing goes
+    to the route in this process."""
+
+    def post_judge(route: str, body: dict[str, object]) -> dict[str, object]:
+        judge = FakeJudge()
+        parts = route.lstrip("/").partition("?")[0].split("/")
+        ROUTES["tactics"].handler(judge, RouteRequest(HTTPMethod.POST, parts, {}, body, "episode-agent"))
+        return judge.answer
+
+    monkeypatch.setattr(http_json, "post_judge", post_judge)
+    (block,) = [plugin.manifest.judge_mcp for plugin in tactics_plugin if plugin.root == PLUGIN]
+    assert block is not None, "plugin.toml has a [judge_mcp] block"
+    judge_mcp.register(block, os.environ)
+
+
+def test_every_tool_the_judge_serves_over_mcp_is_registered_as_a_plugin_tool(over_mcp: None) -> None:
+    from hpcagent_bench_plugins.tactics.wire import TOOLS
+
+    assert TOOLS.keys() <= registry.REGISTRY.keys()
+    assert all(not registry.REGISTRY[name].core for name in TOOLS)
 
 
 def test_a_scope_set_through_the_route_can_be_unset_again(loaded: None) -> None:
@@ -208,7 +227,7 @@ def test_tactics_owns_its_phases_and_its_gate_matches_the_tools_phases(loaded: N
     )
 
 
-def test_a_blind_agent_is_not_served_a_measurement_and_the_tool_list_says_one_submission(loaded: None) -> None:
+def test_a_blind_agent_is_not_served_a_measurement_and_the_tool_list_says_one_submission(over_mcp: None) -> None:
     body = {"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: ",".join(PACKETS["tactics"].tools)}
 
     blind = registry.served(registry.Setup.read({**body, "AGENT_SUBMISSION_MODE": "blind"}))
@@ -293,7 +312,7 @@ def test_profile_offers_ranks_on_a_distributed_task_only_and_sends_them_to_the_j
     assert len(profiled) == 2 and profiled[0]["ranks"] == [1, 2] and "ranks" not in profiled[1]
 
 
-def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(loaded: None) -> None:
+def test_the_full_packet_serves_every_tool_and_lists_reads_as_read_only(over_mcp: None) -> None:
     from hpcagent_bench_plugins.tactics.wire import TOOLS
 
     packet = PACKETS["tactics-full"].tools
@@ -581,12 +600,12 @@ def test_an_unknown_family_is_refused_at_the_first_call(stub: Stub) -> None:
     assert not stub.started, "no session starts for a run that names no family"
 
 
-def test_the_agent_side_tool_sends_the_packets_switched_off_families_with_every_call(
-    loaded: None, monkeypatch: pytest.MonkeyPatch
+def test_every_call_over_mcp_carries_the_packets_switched_off_families(
+    over_mcp: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    sent: list[dict[str, object]] = []
+    sent: list[dict[str, Any]] = []
 
-    def post_judge(route: str, body: dict[str, object]) -> dict[str, object]:
+    def post_judge(route: str, body: dict[str, Any]) -> dict[str, object]:
         sent.append(body)
         return {"result": None}
 
@@ -597,7 +616,7 @@ def test_the_agent_side_tool_sends_the_packets_switched_off_families_with_every_
     setup = registry.Setup.read({"LANGUAGE": "cpp", registry.PACKET_TOOLS_ENV: "view_tree"})
     registry.served(setup)["view_tree"].run({})
 
-    assert sent[-1]["disabled_families"] == ["fusion", "tiling"]
+    assert sent[-1]["params"]["_meta"]["disabled_families"] == ["fusion", "tiling"]
 
 
 def test_a_kernel_written_without_a_check_is_journaled_as_the_change_it_is(stub: Stub) -> None:
@@ -1318,33 +1337,27 @@ def says(text: str) -> list[dict[str, object]]:
     return [{"type": "text", "text": text}]
 
 
-@pytest.mark.judge
-@pytest.mark.parametrize("packet_judge", ["tactics-subagents"], indirect=True)
-def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_the_gate_of_its_phase(
-    loaded: None, packet_judge: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def scripted_episode(
+    packet_name: str,
+    judge: str,
+    replies: list[list[dict[str, object]]],
+    tmp_path: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[ScriptedModel, runner_common.EndReason, str]:
+    """One episode of the bench's Anthropic harness on ``packet_name``: its MCP server lists the judge's tools over
+    ``[judge_mcp]`` and ``replies`` are the model's turns. Answers the model, with every request it got, and the end."""
     home, work = tmp_path / "home", tmp_path / "work"
     work.mkdir()
-    packet = packets.resolve("tactics-subagents", "cpp")
+    packet = packets.resolve(packet_name, "cpp")
     monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("JUDGE_URL", packet_judge)
+    monkeypatch.setenv("JUDGE_URL", judge)
     monkeypatch.setenv("JUDGE_RANK", "0")
     monkeypatch.setenv(agent_plugins.PACKET_AGENTS_ENV, ",".join(packet.agents))
     monkeypatch.setenv(registry.PACKET_TOOLS_ENV, ",".join(packet.tools))
     for key, value in packet.env:
         monkeypatch.setenv(key, value)
     agent_plugins.stage_agents(home, os.environ)
-    model = ScriptedModel(
-        [
-            calls("advance_phase"),
-            calls("advance_phase"),
-            calls("advance_phase"),
-            calls(subagents.TASK_TOOL, subagent_type="kernel-optimizer", prompt="Optimize the first kernel."),
-            calls("list_kernels"),
-            says("nothing to gain"),
-            says("every kernel is done"),
-        ]
-    )
+    model = ScriptedModel(replies)
     monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda **options: model)
     (work / "prompt.txt").write_text("Optimize the program.")
     args = SimpleNamespace(
@@ -1360,9 +1373,62 @@ def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_th
         compaction_trigger=None,
         resume_prompt="",
     )
-    usage = runner_common.UsageLog(work / "usage.jsonl")
+    reason, detail = asyncio.run(run_anthropic.run_episode_async(args, runner_common.UsageLog(work / "usage.jsonl")))
+    return model, reason, detail
 
-    reason, detail = asyncio.run(run_anthropic.run_episode_async(args, usage))
+
+def tool_answer(request: dict[str, Any]) -> dict[str, Any]:
+    """The tool result a model request carries last."""
+    answer: dict[str, Any] = request["messages"][-1]["content"][0]
+    assert answer["type"] == "tool_result" and "is_error" not in answer, answer
+    return answer
+
+
+@pytest.mark.judge
+@pytest.mark.parametrize("packet_judge", ["tactics"], indirect=True)
+def test_a_mock_agent_reads_moves_measures_and_submits_through_the_mcp_server_to_a_correct_grade(
+    loaded: None, packet_judge: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hpcagent_bench_plugins.tactics.wire import TOOLS
+
+    replies = [
+        calls("get_cpf"),
+        calls("list_moves"),
+        calls("run_defaults", stage="moves"),
+        calls("get_performance"),
+        calls("submit"),
+        says("submitted"),
+    ]
+
+    model, reason, detail = scripted_episode("tactics", packet_judge, replies, tmp_path, monkeypatch)
+
+    assert reason is runner_common.EndReason.FINISHED, detail
+    offered = {tool["name"]: tool for tool in model.sent[0]["tools"]}
+    assert set(PACKETS["tactics"].tools) <= offered.keys(), "every packet tool, the judge's listed over MCP"
+    assert offered["apply_move"]["description"].startswith(f"[{TOOLS['apply_move'].label}]"), "as the judge lists it"
+    read, listed, moved, measured, submitted = (tool_answer(request) for request in model.sent[1:6])
+    assert "doall" in str(read["content"]) and str(listed["content"]).strip(), (read, listed)
+    assert "error" not in str(moved["content"]).lower(), moved
+    assert re.search(r"correct\W+true", str(measured["content"]), re.IGNORECASE), measured
+    assert re.search(r"correct\W+true", str(submitted["content"]), re.IGNORECASE), submitted
+
+
+@pytest.mark.judge
+@pytest.mark.parametrize("packet_judge", ["tactics-subagents"], indirect=True)
+def test_a_subagent_calls_the_judge_as_the_episode_that_started_it_and_passes_the_gate_of_its_phase(
+    loaded: None, packet_judge: str, tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    replies = [
+        calls("advance_phase"),
+        calls("advance_phase"),
+        calls("advance_phase"),
+        calls(subagents.TASK_TOOL, subagent_type="kernel-optimizer", prompt="Optimize the first kernel."),
+        calls("list_kernels"),
+        says("nothing to gain"),
+        says("every kernel is done"),
+    ]
+
+    model, reason, detail = scripted_episode("tactics-subagents", packet_judge, replies, tmp_path, monkeypatch)
 
     # three advance_phase calls, the Task call, then the subagent's first request and the one after list_kernels
     first, started, listed = model.sent[0], model.sent[4], model.sent[5]

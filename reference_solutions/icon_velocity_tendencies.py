@@ -22,6 +22,7 @@ from tactics.ir.names import in_order
 from tactics.replay import Context, ReplayError, Script
 
 KERNEL = "icon_velocity_tendencies"
+CI_SKIP = "a full application: its replay takes 7 to 17 minutes on a CI runner; the replay job covers the moves on smaller kernels"
 CONFIGS = (Context("cpu", 72, "M"),)
 
 _TILE = 64

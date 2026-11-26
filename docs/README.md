@@ -14,7 +14,7 @@ judge route do.
 
 | Layer | Where | Holds |
 |---|---|---|
-| Agent tools | `plugin/tactics/tools/tactics.py` | One thin `POST /tactics/<tool>` per tool. The agent image has no DaCe. |
+| Agent tools | `plugin/tactics/plugin.toml` `[judge_mcp]`, `plugin/tactics/mcp_endpoint.py`, `plugin/tactics/tools/tactics.py` | The bench's MCP server lists `POST /tactics/mcp` and serves its tools; only `submit`, `score` and `profile` have agent-side wrappers. The agent image has no DaCe. |
 | Tool table | `plugin/tactics/wire.py` | Each tool's phase, arguments, description and effect. Pure pydantic, read by both sides. |
 | Judge route | `plugin/tactics/routes/tactics.py` | One session process per episode and kernel, one call at a time. |
 | Session process | `tactics/server.py` | A `Session` in its own process; `CALLS` maps each tool to a session call and closes tools by state. |

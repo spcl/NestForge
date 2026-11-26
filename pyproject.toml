@@ -42,7 +42,7 @@ tactics-mcp = "tactics.mcp_server:main"
 fparena = ["fp-arena>=0.1.0"]
 # The bench hosts tactics as a plugin (plugin/tactics) and loads it; tactics imports hpcagent_bench only inside the
 # functions that grade, finalize or emit the corpus, so a plain install never pulls the bench.
-bench = ["hpcagent-bench>=1.0.2"]
+bench = ["hpcagent-bench>=1.0.3"]
 
 [dependency-groups]
 dev = [
@@ -70,6 +70,11 @@ Changelog = "https://github.com/spcl/tactics/blob/main/CHANGELOG.md"
 [tool.uv]
 # spcl's PyPI `dace` installs the same `dace` package as dace-extended: never install it.
 override-dependencies = ["dace ; sys_platform == 'never'"]
+
+# Until hpcagent-bench 1.0.4 is on PyPI: its main, which serves plugin tools over [judge_mcp] (#275)
+[tool.uv.sources]
+hpcagent-bench = { git = "https://github.com/spcl/HPCAgent-Bench", rev = "abef4b636" }
+hpcagent-agent = { git = "https://github.com/spcl/HPCAgent-Bench", subdirectory = "agent", rev = "abef4b636" }
 
 [tool.setuptools.packages.find]
 include = ["tactics*", "reference_solutions"]

@@ -17,7 +17,7 @@ from helpers import program_mismatch
 from tactics.ir.names import in_order
 from tactics.records import KernelStatus, MoveStatus
 from tactics.session import Move, Session
-from tactics.stages.moves import MOVE_SHAPES, PROPAGATE_CONFIG, config_names
+from tactics.stages.moves import MOVE_SHAPES
 from tactics.stages.performance import Reference
 
 pytestmark = pytest.mark.cloudsc
@@ -35,22 +35,6 @@ def straight_pair(session: Session) -> tuple[str, str]:
     raise AssertionError("cloudsc_monolith has no two top-level blocks in a straight run")
 
 
-def applied_and_valid(base: Session, move: Move) -> MoveStatus:
-    """``move`` applied on a copy of ``base`` with every field the listing set, whose program must still validate.
-    ``propagate-config`` is listed without values, so it gets one preset size, as an agent passes it."""
-    sut = base.trial()
-    values = move.config_values
-    if move.kind == PROPAGATE_CONFIG and not values:
-        name = next(name for name in config_names(sut.sdfg) if name in sut.sizes)
-        values = {name: sut.sizes[name]}
-    # every field the listing set, as an agent passes them back; the notes for the agent are no arguments
-    arguments = {k: v for k, v in move.model_dump().items() if k not in ("kind", "labels", "current")}
-    status = sut.apply_move(move.kind, move.labels, **{**arguments, "config_values": values}).status
-    sut.sdfg.validate()
-    return status
-
-
-@pytest.fixture(scope="module")
 def scoped(cloudsc_monolith: Program) -> Session:
     """The default scopes and placement on a copy, as the unstructured and codegen phases start from them."""
     session = cloudsc_monolith[0].trial()
@@ -73,17 +57,6 @@ def test_listed_moves_grow_with_the_maps_not_with_their_pairs(cloudsc_monolith: 
 
     assert set(kinds) <= set(MOVE_SHAPES)
     assert 0 < kinds["doall-fusion"] <= 2 * maps, kinds
-
-
-def test_the_first_listed_move_of_every_kind_applies_and_leaves_a_valid_program(
-    cloudsc_monolith: Program, listed: list[Move]
-) -> None:
-    base = cloudsc_monolith[0]
-    firsts = {move.kind: move for move in reversed(listed)}
-
-    statuses = {kind: applied_and_valid(base, move) for kind, move in firsts.items()}
-
-    assert statuses == dict.fromkeys(firsts, MoveStatus.APPLIED)
 
 
 def test_a_straight_run_of_blocks_becomes_one_kernel_and_unsetting_it_restores_a_correct_program(

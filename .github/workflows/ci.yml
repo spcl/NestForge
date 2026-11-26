@@ -98,7 +98,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      BENCH_TAG: v1.0.2
+      BENCH_TAG: abef4b6361c5f89720269e65f16ebeccefe5924a  # hpcagent-bench main until v1.0.4 is tagged
       PYTHON_VERSION: '3.14'
       PYTHONHASHSEED: '0'
     steps:
