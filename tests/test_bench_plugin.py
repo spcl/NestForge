@@ -258,7 +258,7 @@ def test_the_packet_exposes_the_structured_phase_and_its_page_and_every_tool_is_
 
 
 def test_profile_takes_no_code_and_sends_the_library_finalize_built_with_its_scratch(
-    loaded: None, monkeypatch: pytest.MonkeyPatch
+    over_mcp: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A run's agents sent ``source`` the library judge refuses, or the library without the ``workspace_bytes`` that
     library's scratch needs, a NULL workspace and a SIGSEGV. Neither can be said now, and finalize gets no instrument:
@@ -287,7 +287,7 @@ def test_profile_takes_no_code_and_sends_the_library_finalize_built_with_its_scr
 
 
 def test_profile_offers_ranks_on_a_distributed_task_only_and_sends_them_to_the_judge(
-    loaded: None, monkeypatch: pytest.MonkeyPatch
+    over_mcp: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The bench's own ``profile`` drops ``ranks`` (bench B2), so an agent could never see ``mpi_time_us``."""
     calls: list[tuple[str, dict[str, object]]] = []

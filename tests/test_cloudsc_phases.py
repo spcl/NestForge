@@ -35,6 +35,7 @@ def straight_pair(session: Session) -> tuple[str, str]:
     raise AssertionError("cloudsc_monolith has no two top-level blocks in a straight run")
 
 
+@pytest.fixture(scope="module")
 def scoped(cloudsc_monolith: Program) -> Session:
     """The default scopes and placement on a copy, as the unstructured and codegen phases start from them."""
     session = cloudsc_monolith[0].trial()
