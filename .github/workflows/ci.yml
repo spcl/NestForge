@@ -46,7 +46,7 @@ jobs:
       - name: pytest
         run: |
           ulimit -s "$(ulimit -H -s)"
-          pytest -m "integration and not cloudsc and not gpu and not vendor" --ignore=tests/test_replay.py --timeout=900 --durations=15 --cov=tactics --cov-report=term
+          pytest -m "integration and not cloudsc and not gpu and not vendor" --ignore=tests/test_replay.py -n 2 --timeout=900 --durations=15 --cov=tactics --cov-report=term
       - name: pytest (judge)
         run: |
           ulimit -s "$(ulimit -H -s)"

@@ -1,5 +1,5 @@
 # Copyright 2026 ETH Zurich and the HPCAgent-Bench authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
-# The bench unpacks the sdist and loads the plugin from plugin/tactics (bench .github/user-plugins.toml)
+# The bench unpacks the sdist and loads the plugin from plugin/tactics (HPCAGENT_BENCH_USER_PLUGIN_DIRS)
 graft plugin
 global-exclude __pycache__ *.py[cod]

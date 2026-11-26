@@ -69,7 +69,9 @@ repeating the call goes on from there. The route journals every change, and a se
 `tactics-mcp KERNEL [--preset S] [--datatype float64] [--gpu]` serves the same tools over MCP (stdio) on one bench
 kernel, for any MCP client. Each tool's input schema is its pydantic model's (`tactics/wire.py`), and its hints
 (read-only, destructive) follow its effect. Inside the bench judge, the plugin serves the same tools as JSON-RPC at
-`POST /tactics/mcp`, with the episode's identity in each call's `_meta`.
+`POST /tactics/mcp`; the bench's own MCP server lists them there (`[judge_mcp]` in `plugin/tactics/plugin.toml`) and
+sends the episode's identity and the packet's move families and agent phases in each call's `_meta`. Only `submit`,
+`score` and `profile` are agent-side tools: they finalize the session's program first.
 
 ## Quick start
 

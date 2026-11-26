@@ -14,7 +14,6 @@ import multiprocessing
 import os
 import pathlib
 import re
-import subprocess
 import sys
 import threading
 import tomllib
@@ -83,8 +82,6 @@ PACKET_OWN_TOOLS = {
 SLOT = DeviceSlot("cpu", 3)
 #: Seconds a spawned judge has to import the bench and bind its port.
 JUDGE_START_TIMEOUT_S = 300.0
-#: Seconds one tuner episode may take; the bench's own user-plugins test allows the same.
-TUNER_EPISODE_TIMEOUT_S = 900
 #: One valid call of tools that read, change or measure, its JSON body.
 SLOT_CALLS: dict[str, dict[str, Any]] = {
     "get_cpf": {},
@@ -1261,44 +1258,6 @@ def test_the_reference_column_leaves_an_episodes_library_in_the_episodes_folder(
     assert library.is_file(), "a deferred /submit still needs it after the submission is gone"
 
 
-def tuner_episode(column: str, kernel: str, url: str, folder: pathlib.Path) -> subprocess.CompletedProcess[str]:
-    """One episode of ``column`` as the bench runs a tuner: its own process, identity and folder, on the judge ``url``."""
-    episode, work = folder / "two-stage-episode", folder / "work"
-    episode.mkdir()
-    work.mkdir()
-    return subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "hpcagent_bench.harness.run_tuner",
-            *("--workdir", str(work), "--cwd", str(episode), "--kernel", kernel, "--language", "cpp"),
-        ],
-        env={
-            **os.environ,
-            "TUNER": column,
-            "JUDGE_URL": url,
-            "JUDGE_RANK": "0",
-            "JUDGE_INPUT_MODE": InputMode.ANY.text,
-            "HPCAGENT_BENCH_EPISODE_ID": episode.name,
-        },
-        capture_output=True,
-        text=True,
-        timeout=TUNER_EPISODE_TIMEOUT_S,
-        check=False,
-    )
-
-
-@pytest.mark.judge
-@pytest.mark.parametrize("packet_judge", ["tactics-two-stage"], indirect=True)
-def test_the_two_stage_stub_walks_every_phase_through_the_gate_to_a_correct_submission(
-    packet_judge: str, tmp_path: pathlib.Path
-) -> None:
-    done = tuner_episode("dace_cpu_canon_tactics_two_stage", "jacobi_1d", packet_judge, tmp_path)
-
-    assert done.returncode == 0, done.stdout + done.stderr
-    assert "submitted, correct=True" in done.stdout, done.stdout + done.stderr
-
-
 class ScriptedModel:
     """The model behind a harness: ``messages.stream`` answers each request with the next reply, keeping every request."""
 
@@ -1463,9 +1422,9 @@ def test_the_reference_column_submits_a_library_the_judge_grades_correct(
     assert grade.build_ok is True and grade.correct is True, grade.detail
 
 
-# a straight diamond of maps; maps inside a time loop
+# a straight diamond of maps (jacobi_1d's maps inside a time loop: the bench-plugin job's stub episodes)
 @pytest.mark.judge
-@pytest.mark.parametrize("kernel", [KERNEL, "jacobi_1d"])
+@pytest.mark.parametrize("kernel", [KERNEL])
 def test_a_finalized_program_is_a_library_the_judge_grades_correct(
     loaded: None, judge_url: str, kernel: str, tmp_path: pathlib.Path
 ) -> None:

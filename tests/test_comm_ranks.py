@@ -36,9 +36,12 @@ NEEDS_TWO = frozenset({"ring"})
 #: The fixtures with a blocking row that has a start-and-wait form.
 SPLITTABLE = ("redistribute", "residual_loop", "ring")
 #: The fixtures every legal move runs on across ranks. Left out, as a larger fixture runs the same pattern and the
-#: analysis tests check each statically: halo_waitall (halo_overlap), halo_waits (halo_split_waitall), halo_steps and
-#: residual_loop (jacobi_rows), halo_stencil (halo_rows; both run in the overlapped-stencil tests).
-MOVED = sorted(set(FIXTURES) - {"halo_waitall", "halo_waits", "halo_steps", "residual_loop", "halo_stencil"})
+#: analysis tests check each statically: halo_waitall (halo_overlap), halo_waits (halo_split_waitall), two_exchanges
+#: (halo_overlap and halo_rows), halo_steps and residual_loop (jacobi_rows), halo_stencil (halo_rows; both run in the
+#: overlapped-stencil tests).
+MOVED = sorted(
+    set(FIXTURES) - {"halo_waitall", "halo_waits", "two_exchanges", "halo_steps", "residual_loop", "halo_stencil"}
+)
 #: The most cuts ``split-doall`` lists on one stencil: its first and its last row.
 MAX_CUTS = 2
 
