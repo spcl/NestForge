@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dace-tactics"
-version = "0.1.2"
+version = "0.1.3"
 description = "Reproducible transformation-based agents and a harness for DaCe: tactics applied as legal moves, replayed as recipes."
 readme = "README.md"
 license = "GPL-3.0-or-later"

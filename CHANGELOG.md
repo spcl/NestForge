@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3 (2026-11-26)
+
+- CI: run tactics as a bench user plugin (4a16e6b)
+- Ship plugin/tactics in the sdist (36dd47a)
+
 ## 0.1.2 (2026-11-26)
 
 - Publish on PyPI as dace-tactics: PyPI refuses the name tactics (a868199)
