@@ -155,8 +155,7 @@ pytest -m cloudsc                                                       # every 
 ```
 
 HPCAgent-Bench (`hpcagent-bench`), DaCe extended (`dace-extended`), dace-relayout and FP-Arena come from PyPI, in a
-checkout as in a pip install. `python scripts/bump_deps.py [bench-branch]` points a checkout at the tip of a bench
-branch instead (the nightly bench-tip CI job does this). Tactics is a user plugin of the bench (`plugin/tactics`, through
+checkout as in a pip install. Tactics is a user plugin of the bench (`plugin/tactics`, through
 `HPCAGENT_BENCH_USER_PLUGIN_DIRS`); the bench never imports it. The plugin, its packets, optimizers, judge route
 (`/tactics/<tool>`), `TACTICS_*` settings and record file (`tactics.json`) are all named `tactics`. Tactics assumes Linux.
 A pip install of the bench does not ship the KernelBench submodule, so an ML kernel (`conv2d_*`) has no PyTorch

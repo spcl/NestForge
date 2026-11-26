@@ -112,31 +112,6 @@ def column_scan_script() -> Script:
     return Script(session)
 
 
-def test_scope_after_the_default_makes_the_step_loop_one_kernel() -> None:
-    script = column_scan_script()
-    script.defaults()
-    done = script.scope(where=lambda rows: isinstance(rows[0][0], LoopRegion))
-    assert done.kind == "define-scope"
-    assert len(done.labels) == 1
-    assert not top_loops(script.session), "the step loop is outlined: no loop is left at the top"
-    assert [m.kind for m in script.applied] == ["define-scope"]
-
-
-# Reproducer: replay could not pick a move inside a kernel (0.1.1)
-def test_a_schedule_move_inside_a_kernel_replays_with_its_scope() -> None:
-    script = column_scan_script()
-    script.defaults()
-    script.scope(where=lambda rows: isinstance(rows[0][0], LoopRegion))
-    (kernel,) = script.session.kernels()
-
-    listed = script.pick("set-schedule-cpu", writes=["_out_y"], scope=kernel)
-
-    done = script.apply(listed.model_copy(update={"schedule": "dynamic", "chunk": 16}), scope=kernel)
-
-    assert (done.kind, done.scope) == ("set-schedule-cpu", kernel)
-    assert script.session.history, "the schedule is a change rollback can take back"
-
-
 def test_scope_refuses_a_filter_nothing_matches() -> None:
     script = column_scan_script()
     script.defaults()

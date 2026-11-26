@@ -2,10 +2,6 @@ name: Set up tactics
 description: >-
   Python, the apt toolchain, HPTT, the grading seal, tactics with its dev group, the emitted bench corpus, and the
   OpenMP launch environment of the bench's judge.
-inputs:
-  bench-tip:
-    description: Pin the tip of the tracked bench branch (scripts/bump_deps.py) before installing.
-    default: 'false'
 runs:
   using: composite
   steps:
@@ -13,7 +9,7 @@ runs:
       with:
         python-version: '3.12'
         activate-environment: true
-        enable-cache: ${{ inputs.bench-tip != 'true' }}
+        enable-cache: true
         cache-dependency-glob: pyproject.toml
     - uses: actions/cache@v4
       with:
@@ -35,10 +31,6 @@ runs:
       run: |
         knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
         if [ -e "$knob" ]; then echo 0 | sudo tee "$knob" > /dev/null; fi
-    - name: Pin the tip of the tracked bench branch and the DaCe and relayout it pins
-      if: inputs.bench-tip == 'true'
-      shell: bash
-      run: python scripts/bump_deps.py && git diff pyproject.toml
     - run: uv pip install -e '.[bench]' --group dev
       shell: bash
     # The bench emits each kernel's _dace.py once; its per-kernel caches restore them by fingerprint, so a warm runner

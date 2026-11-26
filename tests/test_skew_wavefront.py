@@ -49,10 +49,11 @@ def outer_carried(aa: dace.float64[N, N], bb: dace.float64[N, N]) -> None:
 
 @dace.program
 def time_steps(aa: dace.float64[N]) -> None:
-    """A time loop whose iterator indexes nothing: every step re-applies the same update."""
+    """A time loop whose iterator indexes nothing: every step re-applies the same update (nonlinear, so DaCe's
+    canonical form keeps the level loop instead of a Scan library node)."""
     for t in range(T):
         for i in range(1, N):
-            aa[i] = aa[i] + aa[i - 1]
+            aa[i] = aa[i] + aa[i - 1] * aa[i - 1]
 
 
 def canonical(prog: dace.frontend.python.parser.DaceProgram, wavefront: bool = False, gpu: bool = False) -> Session:

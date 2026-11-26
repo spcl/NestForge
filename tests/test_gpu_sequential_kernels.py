@@ -1,7 +1,10 @@
 # Copyright 2021 ETH Zurich and the Tactics authors.
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A sequential kernel the agent runs on the GPU stays a valid program and renders its CUDA source (#93), without a
-GPU: a scalar the kernel reads on the host and the device writes, and a library fill placement already offloaded."""
+GPU: a scalar the kernel reads on the host and the device writes, and a column scan whose level loop stays sequential.
+
+cloudsc_cover_carry was the second fixture until dace-extended 1.0.3, whose canonical form runs its carried level loop
+inside a parallel map over the columns (verified against the numpy kernel): it has no sequential kernel left."""
 
 from pathlib import Path
 
@@ -16,7 +19,7 @@ from tactics.stages.canonicalize import Targets
 pytestmark = pytest.mark.integration
 
 
-@pytest.mark.parametrize("name", ["poisson_cg_3d", "cloudsc_cover_carry"])
+@pytest.mark.parametrize("name", ["poisson_cg_3d", "column_scan_nproma_nlev"])
 def test_a_sequential_kernel_on_the_gpu_validates_and_renders(tmp_path: Path, name: str) -> None:
     kernel = corpus_kernel(name)
     assert kernel is not None, f"{name} is in the corpus"

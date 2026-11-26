@@ -115,6 +115,5 @@ sweep verifies every variant against the oracle, so a wrong one loses by itself.
 ## Pins
 
 Tactics installs the bench, DaCe extended, dace-relayout and FP-Arena from PyPI; a new release of one of them reaches
-tactics as a pin-bump PR that merges on green CI. `python scripts/bump_deps.py [bench-branch]` points a checkout at
-the tip of a bench branch instead. A change to the plugin's tools or phases needs the bench's `.github/user-plugins.toml` bumped afterwards, or
-the bench's CI keeps testing the old commit.
+tactics as a pin-bump PR that merges on green CI. CI's bench-plugin job runs the plugin's `[ci]` episodes in a
+checkout of the bench release tag.

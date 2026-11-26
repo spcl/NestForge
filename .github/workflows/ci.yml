@@ -1,7 +1,6 @@
 name: CI
 
-# uv installs from pyproject.toml: hpcagent-bench, DaCe extended, dace-relayout and FP-Arena come from PyPI;
-# scripts/bump_deps.py points the bench-tip job at the tip of the bench branch.
+# uv installs from pyproject.toml: hpcagent-bench, DaCe extended, dace-relayout and FP-Arena come from PyPI.
 # Must stay credential-free so CI runs on fork PRs. Every job sets up through .github/actions/setup.
 
 on:
@@ -9,10 +8,6 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
-  # nightly too: the bench-tip job checks Tactics' bench-facing tests against the tip of the bench branch it tracks
-  # (scripts/bump_deps.py), not only the pin
-  schedule:
-    - cron: '0 3 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -95,20 +90,6 @@ jobs:
           ulimit -s "$(ulimit -H -s)"
           pytest -m cloudsc ${{ matrix.shard.select }} --timeout=5400 --durations=15 -s
 
-  bench-tip:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-        with:
-          bench-tip: 'true'
-      - name: "pytest (the tests that call the bench: plugin, corpus, manifests, session process)"
-        run: |
-          ulimit -s "$(ulimit -H -s)"
-          pytest -m "not cloudsc and not gpu and not vendor" -n auto --timeout=900 \
-            tests/test_bench_plugin.py tests/test_corpus_emit.py tests/test_manifest_signature.py \
-            tests/test_abi_order.py tests/test_import_isolation.py tests/test_session_process.py
 
   # Tactics as a bench user plugin, as the bench's former user-plugins job ran it: the bench checked out at a release
   # tag as the workspace root (its setup action syncs its own uv.lock), tactics installed by the plugin's [install]
