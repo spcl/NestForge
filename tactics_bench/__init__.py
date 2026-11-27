@@ -31,7 +31,7 @@ import reference_solutions
 from tactics.plugin_record import SCHEMA, episode_record, keep_capped
 from tactics.replay import Context, Script, Solution, baseline, load_solution
 from tactics.records import KernelStatus, MoveStatus, spelled
-from tactics.server import Setup, start
+from tactics.server import Setup, session_preset, start
 from tactics.stages.families import ALL, checked_families
 from tactics.session import DEFAULTS_PREFIX, MoveResult, kernel_language
 
@@ -83,8 +83,9 @@ class ReferenceOptimizer(FlavorOptimizer):
     def tune(self, task: Task, pipeline: str) -> Submission:
         gpu = task.image != "cpu"
         service = config.current().service
-        # the service's preset is a token ("XL+fuzz"); the judge grades on the preset it resolves to
-        preset = resolve_preset(service.preset).text
+        # the service's preset is a token ("XL+fuzz"); the judge grades on the preset it resolves to, and a fuzzed
+        # one keeps its rung only through session_preset
+        preset = session_preset(resolve_preset(service.preset).text)
         session, _, _ = start(Setup(task.kernel, preset, service.datatype, gpu, disabled_families=self.families))
         script = Script(session)
         solution = reference_solution(task.kernel) if self.references else None

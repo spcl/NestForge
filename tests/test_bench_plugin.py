@@ -55,7 +55,7 @@ import tactics_bench
 from tactics import plugin_record
 from tactics.paths import REPO_ROOT
 from tactics.records import KernelStatus, MoveStatus, Refusal, Refused
-from tactics.server import CALLS, CHANGING, STOP_GRACE_S, TOOL_PHASES, TOOL_TIMEOUT_S, Reply, Setup
+from tactics.server import CALLS, CHANGING, STOP_GRACE_S, TOOL_PHASES, TOOL_TIMEOUT_S, Reply, Setup, size_rung
 from tactics.session import KernelOutcome, Move, MoveResult, Restored, Session, TunedValue, TuneResult
 from tactics.stages.families import FAMILIES
 from tactics_bench import DefaultOptimizer, NoWaveOptimizer, ReferenceOptimizer
@@ -1135,10 +1135,13 @@ def test_the_reference_column_starts_on_the_preset_the_token_resolves_to(monkeyp
     monkeypatch.setattr(tactics_bench, "start", recording_start)
     sut = ReferenceOptimizer("dace_cpu_canon_tactics_reference")
 
-    with config.scoped_environment({"HPCAGENT_BENCH_SERVICE_PRESET": "XL+fuzz"}), pytest.raises(Started):
-        sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
+    for token in ("XL+fuzz", "L+fuzz"):
+        with config.scoped_environment({"HPCAGENT_BENCH_SERVICE_PRESET": token}), pytest.raises(Started):
+            sut.tune(Task(KERNEL, SourceMode.ANY, Language.CPP), "canon_cpu")
 
-    assert presets == ["fuzzed"]
+    # the fuzzed base keeps its rung: a bare "fuzzed" would start an L+fuzz judge's session at XL (T48-34)
+    assert presets == ["XL+fuzz", "L+fuzz"]
+    assert [size_rung(preset) for preset in presets] == ["XL", "L"]
 
 
 class FinalizedSession:

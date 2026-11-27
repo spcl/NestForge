@@ -11,7 +11,7 @@ from helpers import corpus_kernel
 from hpcagent_bench.harness.grading import ReferenceUnavailable
 
 import tactics.server as server_mod
-from tactics.server import KERNELBENCH_DIR_VAR, Setup, bench_data, numpy_outputs, size_rung
+from tactics.server import KERNELBENCH_DIR_VAR, Setup, bench_data, numpy_outputs, session_preset, size_rung
 from tactics.stages.performance import BENCH_REFERENCE, NUMPY_REFERENCE
 
 
@@ -84,3 +84,23 @@ def test_the_numpy_function_leaves_the_inputs_it_was_given_as_drawn() -> None:
 def test_a_fuzzed_token_runs_a_session_on_its_rung() -> None:
     """A judge on ``XL+fuzz`` hands the token to the reference flavor and ``fuzzed`` to the agent's route."""
     assert [size_rung(token) for token in ("S", "M+fuzz", "XL+fuzz", "fuzzed")] == ["S", "M", "XL", "XL"]
+
+
+# Reproducer: an L+fuzz judge started every Tactics session at XL and OOMed on a Mac (T48-34, jacobi_1d, f58cc92)
+def test_a_session_of_a_fuzzed_judge_keeps_the_anchor_rung() -> None:
+    """``resolve_preset("L+fuzz")`` leaves ``fuzzed`` and moves L into ``fuzz.anchor``; the session's token must
+    carry L, since the spawned session process does not see that override."""
+    from hpcagent_bench import config, fuzz
+    from hpcagent_bench.categories import Preset
+    from hpcagent_bench.spec import resolve_preset
+
+    try:
+        resolved = resolve_preset("L+fuzz")
+        assert resolved is Preset.FUZZED
+        assert session_preset(resolved.text) == "L+fuzz"
+        assert size_rung(session_preset(resolved.text)) == "L"
+        assert size_rung(session_preset(resolve_preset("XL+fuzz").text)) == "XL"
+        assert [session_preset(kept) for kept in ("S", "M+fuzz", "XL")] == ["S", "M+fuzz", "XL"]
+    finally:
+        config.clear_override("fuzz.anchor")
+        config.clear_override(fuzz.PRESET_SEED_KEY)
