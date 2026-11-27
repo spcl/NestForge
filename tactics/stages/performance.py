@@ -180,6 +180,20 @@ def program_buffers(
     return buffers
 
 
+def program_symbols(
+    sdfg: dace.SDFG, inputs: dict[str, np.ndarray], sizes: Mapping[str, SymbolValue]
+) -> dict[str, SymbolValue]:
+    """``sizes``, and the value of each scalar input the program takes as a symbol: canonicalization makes a scalar
+    parameter a symbol where it sizes or bounds something (``ls3df_scf``'s ``dvol``), and the bench passes it as a
+    0-d array, not a size."""
+    scalars: dict[str, SymbolValue] = {
+        name: inputs[name].item()
+        for name in sorted(map(str, sdfg.free_symbols))
+        if name not in sizes and name in inputs and np.ndim(inputs[name]) == 0
+    }
+    return {**sizes, **scalars}
+
+
 def time_program(
     sdfg: dace.SDFG,
     out_dir: Path,
@@ -197,8 +211,9 @@ def time_program(
     except Exception as err:  # noqa: BLE001 -- a refused build is feedback, not a crash
         return ProgramReport(error=f"{type(err).__name__}: {err}")
     frame = out_dir / "src" / "cpu" / f"{program.name}.cpp"
+    symbols = program_symbols(sdfg, inputs, sizes)
     call = ProgramCall(
-        so_path, frame.read_text(), program.name, program_buffers(sdfg, inputs, sizes), sizes, reps, reference
+        so_path, frame.read_text(), program.name, program_buffers(sdfg, inputs, sizes), symbols, reps, reference
     )
     timed = run_spawned(run_program, call) if gpu else run_isolated(lambda: run_program(call), ProgramTime)
     if isinstance(timed, Failure):
