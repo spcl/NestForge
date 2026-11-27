@@ -100,7 +100,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
-      BENCH_TAG: v1.0.4
+      BENCH_TAG: v1.0.5
       PYTHON_VERSION: '3.14'
       PYTHONHASHSEED: '0'
     steps:

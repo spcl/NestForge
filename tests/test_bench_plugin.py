@@ -602,11 +602,12 @@ def test_every_call_over_mcp_carries_the_packets_switched_off_families(
 ) -> None:
     sent: list[dict[str, Any]] = []
 
-    def post_judge(route: str, body: dict[str, Any]) -> dict[str, object]:
+    def post_judge_waiting(route: str, body: dict[str, Any], timeout: float) -> dict[str, object]:
         sent.append(body)
         return {"result": None}
 
-    monkeypatch.setattr(http_json, "post_judge", post_judge)
+    # a tools/call waits its route's timeout, so it posts through post_judge_waiting
+    monkeypatch.setattr(http_json, "post_judge_waiting", post_judge_waiting)
     monkeypatch.setattr(http_json, "assigned_kernel", lambda payload: KERNEL)
     monkeypatch.setenv("TACTICS_DISABLED_FAMILIES", "fusion, tiling")
 
