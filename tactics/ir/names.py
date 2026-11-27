@@ -223,6 +223,18 @@ def index_array_of(name: str, arguments: set[str]) -> str | None:
     return next((a for a in sorted(arguments) if name.endswith(f"_{a}_index") and name != f"{a}_index"), None)
 
 
+def kernel_bound(sdfg: dace.SDFG) -> set[str]:
+    """The containers a kernel (``ExternalCall``) of ``sdfg`` reads or writes. Their names are its interface: the
+    kernel's ``abi_order`` and its body name them bare, its connectors prefixed, and a ``replace_dict`` reaches the
+    first two only (a loop kernel's ``__sym_out_nbase_iter`` became ``tmp165`` in ``abi_order`` alone, ``qe_cegterg``).
+    """
+    bound: set[str] = set()
+    for node, state in sdfg.all_nodes_recursive():
+        if isinstance(node, ExternalCall):
+            bound |= {edge.data.data for edge in state.all_edges(node) if edge.data.data is not None}
+    return bound
+
+
 def temporary_renames(sdfg: dace.SDFG, namer: Namer) -> dict[str, str]:
     """The short name :func:`shorten_temporaries` gives each generated temporary of ``sdfg``, by its name now."""
     declared: set[str] = set()
@@ -233,7 +245,7 @@ def temporary_renames(sdfg: dace.SDFG, namer: Namer) -> dict[str, str]:
         for name, desc in sd.arrays.items():
             shapes[name] = shapes.get(name, True) and scalar_like(desc)
     renames: dict[str, str] = {}
-    for name in sorted(declared - arguments - sdfg.symbols.keys()):
+    for name in sorted(declared - arguments - sdfg.symbols.keys() - kernel_bound(sdfg)):
         if name not in shapes:
             continue
         index_of = index_array_of(name, arguments)
