@@ -138,9 +138,9 @@ kernel_1 (gpu)
 5. `set-schedule-cpu` sets schedule and chunk, and the generated code holds `schedule(dynamic, 16)` on that loop
    and on no other, after the kernel is placed again (built). The generated text is the product here, so the test
    reads it.
-6. A triangular nest computes the reference under every CPU schedule, on several threads.
+6. A triangular nest computes the reference under every CPU schedule, on several threads (built).
 7. `set-schedule-cpu` is refused on a nested doall, in a scope placed on the GPU, without a scope, and with a
-   chunk under `default` (built). Test 6 (numerics on several threads) is not built: it needs a finalized build.
+   chunk under `default` (built).
 8. `set-schedule-gpu` sets `gpu_block_size`, and an inner `dynamic` gives a `GPU_ThreadBlock_Dynamic` map under
    the kernel, after which a `block` is refused; `static` on a symbolic extent and a chunk with `static` are refused; `guided` with `chunk=2` sets `omp_schedule` and `omp_chunk_size` on the placed map; a CPU
    kernel takes no GPU schedule (built; structure only, numerics on beverin).

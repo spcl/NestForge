@@ -15,6 +15,7 @@ from dace.sdfg.nodes import MapEntry
 from tactics.records import MoveStatus, Refusal
 from tactics.session import Session
 from tactics.stages.canonicalize import Targets
+from tactics.stages.performance import Reference
 from tactics.stages.placement import has_device_memory
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -433,3 +434,32 @@ def test_a_block_shorter_than_the_doalls_rank_is_padded_with_ones_as_cuda_reads_
 
     assert (done.status, done.reason) == (MoveStatus.APPLIED, "GPU schedule block=[256, 1]"), done
     assert placed_maps(session, first)[listed.labels[0]].gpu_block_size == [256, 1]
+
+
+@dace.program
+def triangular(a: dace.float64[N, N], s: dace.float64[N]) -> None:
+    for i in dace.map[0:N]:
+        for j in range(i + 1):
+            s[i] = s[i] + a[i, j]
+
+
+@pytest.mark.parametrize(("schedule", "chunk"), [("static", None), ("dynamic", 3), ("guided", None)])
+def test_a_triangular_nest_computes_the_reference_under_each_cpu_schedule_on_four_threads(
+    tmp_path: Path, schedule: str, chunk: int | None
+) -> None:
+    size = 37
+    session = Session(
+        triangular.to_sdfg(simplify=True), targets=Targets(gpu=False), work_dir=str(tmp_path), sizes={"N": size}
+    )
+    (kernel,) = (k.name for k in session.default_scopes())
+    session.place({kernel: "cpu"})
+    (listed,) = session.list_moves("set-schedule-cpu", scope=kernel)
+    a = np.random.default_rng(0).random((size, size))
+
+    done = session.apply_move(
+        "set-schedule-cpu", listed.labels, scope=kernel, schedule=schedule, chunk=chunk, threads=4
+    )
+
+    assert done.status is MoveStatus.APPLIED, done
+    reference = Reference({"s": np.tril(a).sum(axis=1)}, 1e-12, 1e-12)
+    assert session.performance({"a": a, "s": np.zeros(size)}, reference).structured.correct is True
