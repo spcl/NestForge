@@ -683,6 +683,18 @@ def derives_from_params(body: nodes.NestedSDFG, entry: nodes.MapEntry) -> bool:
     )
 
 
+def copies_own_constant(body: dace.SDFG) -> bool:
+    """Whether a state of ``body`` copies out of a constant of ``body`` itself: MapFission moves the constant out of the
+    map but not the copy, which runs once outside every new map, with the map's parameter in its memlet unbound."""
+    return any(
+        isinstance(edge.src, nodes.AccessNode)
+        and isinstance(edge.dst, nodes.AccessNode)
+        and edge.src.data in body.constants_prop
+        for state in body.states()
+        for edge in state.edges()
+    )
+
+
 def plan_map_fission(row: Row) -> Rewrite | str:
     """Split a map by its independent output groups: a nested-SDFG body by ``MapFission``'s nested pattern, a flat
     body writing two or more outputs by its component pattern (not per tasklet, which would turn locals into
@@ -696,6 +708,12 @@ def plan_map_fission(row: Row) -> Rewrite | str:
         nested = pattern(MapFission, state.sdfg, where, expr_index=1)
         if nested is None or derives_from_params(body, entry) or nests_scalar_output(body.sdfg):
             return MAP_FISSION_REFUSED
+        if copies_own_constant(body.sdfg):
+            return Refused(
+                "blocked by MapFission: the map body copies out of a constant of its own, a copy MapFission would "
+                "leave outside every new map.",
+                Refusal.DEPENDENCE,
+            )
         nested_body = body.sdfg
 
         def split() -> None:

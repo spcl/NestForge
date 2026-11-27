@@ -110,3 +110,72 @@ def test_map_fission_splits_the_map_by_statement_and_retires_its_label_and_match
     session.sdfg(a=a.copy(), b=b, c=c, N=n)
     np.testing.assert_array_equal(b, a + 1.0)
     np.testing.assert_array_equal(c, a * 2.0)
+
+
+ZVQX = np.array([0.0, 0.13, 4.0, 1.0, 0.0])
+
+
+def copy_then_use_map(constant: bool) -> dace.SDFG:
+    """cloudsc's ``zvqx`` loop: ``doall i in 0:5`` whose body copies ``zvqx[i]`` into a scalar, sets ``flag[i] = 0``
+    beside the copy and then writes ``out[i] = 2 * scalar``; ``zvqx`` is a constant of the body or the map's input."""
+    body = dace.SDFG("body")
+    body.add_array("zvqx", [5], f64, transient=constant)
+    if constant:
+        body.add_constant("zvqx", ZVQX, body.arrays["zvqx"])
+    body.add_scalar("pick", f64, transient=True)
+    body.add_array("flag", [5], f64)
+    body.add_array("out", [5], f64)
+    body.add_symbol("i", dace.int64)
+    copy = body.add_state("copy")
+    copy.add_nedge(copy.add_read("zvqx"), copy.add_write("pick"), dace.Memlet("zvqx[i]"))
+    zero = copy.add_tasklet("zero", {}, {"y"}, "y = 0.0")
+    copy.add_edge(zero, "y", copy.add_write("flag"), None, dace.Memlet("flag[i]"))
+    use = body.add_state_after(copy, "use")
+    twice = use.add_tasklet("twice", {"x"}, {"y"}, "y = 2.0 * x")
+    use.add_edge(use.add_read("pick"), None, twice, "x", dace.Memlet("pick[0]"))
+    use.add_edge(twice, "y", use.add_write("out"), None, dace.Memlet("out[i]"))
+
+    sdfg = dace.SDFG(f"copy_then_use_{'constant' if constant else 'input'}")
+    if not constant:
+        sdfg.add_array("zvqx", [5], f64)
+    sdfg.add_array("flag", [5], f64)
+    sdfg.add_array("out", [5], f64)
+    state = sdfg.add_state()
+    me, mx = state.add_map("pick", dict(i="0:5"))
+    nest = state.add_nested_sdfg(body, {} if constant else {"zvqx": None}, {"flag": None, "out": None}, {"i": "i"})
+    if constant:
+        state.add_nedge(me, nest, dace.Memlet())
+    else:
+        state.add_memlet_path(state.add_read("zvqx"), me, nest, dst_conn="zvqx", memlet=dace.Memlet("zvqx[0:5]"))
+    for name in ("flag", "out"):
+        state.add_memlet_path(nest, mx, state.add_write(name), src_conn=name, memlet=dace.Memlet(f"{name}[i]"))
+    sdfg.validate()
+    return sdfg
+
+
+def test_fission_of_a_map_whose_body_copies_out_of_its_own_constant_is_refused_and_leaves_the_program() -> None:
+    """MapFission moved the constant out of the map but left the copy outside every new map, reading ``zvqx[i]``
+    with ``i`` unbound (cloudsc_monolith on dace-extended 1.0.5 failed to build)."""
+    sut = Session(copy_then_use_map(constant=True))
+    label = all_map_entries(sut.sdfg)[0].map.label
+    before = sut.sdfg.hash_sdfg()
+
+    result = sut.apply_move("doall-fission", (label,))
+
+    assert result.status is MoveStatus.ILLEGAL and "constant of its own" in result.reason, result
+    assert sut.sdfg.hash_sdfg() == before
+    assert not sut.list_moves("doall-fission")
+
+
+def test_fission_of_a_map_whose_body_copies_out_of_the_map_s_input_splits_it_and_matches_numpy() -> None:
+    sut = Session(copy_then_use_map(constant=False))
+    label = all_map_entries(sut.sdfg)[0].map.label
+
+    result = sut.apply_move("doall-fission", (label,))
+
+    assert result.status is MoveStatus.APPLIED, result
+    assert len(all_map_entries(sut.sdfg)) > 1
+    flag, out = np.ones(5), np.zeros(5)
+    sut.sdfg(zvqx=ZVQX.copy(), flag=flag, out=out)
+    np.testing.assert_array_equal(out, 2.0 * ZVQX)
+    np.testing.assert_array_equal(flag, np.zeros(5))
