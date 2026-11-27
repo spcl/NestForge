@@ -190,7 +190,8 @@ def test_emitted_python_matches_sdfg(kind: str, short: str) -> None:
 
     def work() -> MaxDiff:
         make_sdfg, sizes, center = builder_for(kind, short)
-        with tempfile.TemporaryDirectory() as td:
+        # the compiled library stays loaded: NFS keeps a .nfs file in the folder until the process exits
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
             base = base_inputs(make_sdfg(), sizes, center)
             oracle = run_oracle_nest(make_sdfg, sizes, base, Path(td))
             cand = run_emitted_python(make_sdfg, sizes, base)
@@ -225,7 +226,8 @@ def test_emit_compiled_matches_sdfg_across_compilers(kind: str, short: str, lang
         nests = lower_nests_to_external_call(make_sdfg())
         suffix = {"c": ".c", "fortran": ".f90"}[lang]
         worst = 0.0
-        with tempfile.TemporaryDirectory() as td:
+        # the compiled library stays loaded: NFS keeps a .nfs file in the folder until the process exits
+        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as td:
             d = Path(td)
             for i, (_ext, b) in enumerate(nests):
                 name = f"{short.split('/')[-1]}_n{i}"
