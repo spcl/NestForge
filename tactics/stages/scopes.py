@@ -34,7 +34,7 @@ from dace.sdfg.state import (
 from dace.transformation.passes.outline_to_external_calls import reference_sdfg
 from dace.utils import find_new_name
 
-from tactics.corpus.translate import prepare
+from tactics.corpus.translate import prepare, runtime_sized_scratch
 from tactics.ir.comm import comm_class
 from tactics.ir.dace_types import strings
 from tactics.ir.extract import (
@@ -105,6 +105,14 @@ def node_boundary(ext: ExternalCall) -> Boundary:
     for name in outputs:
         nest.replace(out_conn(name), name)
     return Boundary(inputs, outputs, symbols, nsdfg_node=None, state=None, standalone_sdfg=nest)
+
+
+def kernel_runtime_sized(ext: ExternalCall) -> tuple[str, ...]:
+    """The temporaries kernel ``ext`` sizes while it runs (:func:`runtime_sized_scratch`); only a kernel without a
+    NumPy oracle can have any, so one with an oracle costs nothing."""
+    if ext.numpy_source or ext.standalone_sdfg is None:
+        return ()
+    return runtime_sized_scratch(node_boundary(ext))
 
 
 def connector(prefixed: Callable[[str], str], conn: str | None) -> str | None:

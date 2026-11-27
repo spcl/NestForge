@@ -64,6 +64,17 @@ class UnsupportedNest(Exception):
     __slots__ = ()
 
 
+class RuntimeSizedScratch(UnsupportedNest):
+    """A kernel temporary is sized by a value the kernel reads or computes while it runs (``lavamd``'s
+    ``neighbor_counts[l]``), so no caller can allocate it: the kernel has no NumPy oracle and allocates it itself."""
+
+    __slots__ = ("arrays",)
+
+    def __init__(self, message: str, arrays: tuple[str, ...]) -> None:
+        super().__init__(message)
+        self.arrays = arrays
+
+
 #: Math intrinsic in tasklet code -> its NumPy spelling.
 NP_FUNCTIONS = {
     **{fn: fn for fn in ("sqrt", "cbrt", "exp", "exp2", "expm1", "log", "log2", "log10", "log1p", "sin", "cos")},
@@ -530,35 +541,48 @@ def positive_as_sizes(expr: sympy.Expr) -> bool:
     return expr.xreplace(sizes).is_positive is True
 
 
-def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
-    """Size each transient shaped by a loop variable at that variable's extreme value, so the caller can allocate it;
-    refuse one whose extent the caller cannot evaluate."""
-    known = set(symbols)
+def loop_ranges(sdfg: dace.SDFG) -> dict[str, tuple[Any, Any]]:
+    """``(start, end)`` of every loop variable of ``sdfg`` whose bounds loop analysis finds."""
     ranges: dict[str, tuple[Any, Any]] = {}
     for region in sdfg.all_control_flow_regions():
         if isinstance(region, LoopRegion) and region.loop_variable:
             start, end = loop_analysis.get_init_assignment(region), loop_analysis.get_loop_end(region)
             if start is not None and end is not None:
                 ranges[region.loop_variable] = (start, end)
+    return ranges
+
+
+def widest(dim: Any, ranges: dict[str, tuple[Any, Any]]) -> sympy.Expr:
+    """``dim`` with each loop variable at its extreme value."""
+    extent = sympy.sympify(dim)
+    for _ in range(len(ranges) + 1):  # a bound may itself name an outer loop's variable
+        loop_vars = [s for s in extent.free_symbols if str(s) in ranges]
+        if not loop_vars:
+            break
+        for var in loop_vars:
+            lo, hi = ranges[str(var)]
+            extent = sympy.Max(extent.subs(var, lo), extent.subs(var, hi))  # monotone in var
+    return simplify_as_sizes(extent)
+
+
+def widen_scratch(sdfg: dace.SDFG, symbols: Iterable[str]) -> None:
+    """Size each transient shaped by a loop variable at that variable's extreme value, so the caller can allocate it;
+    refuse, naming every one, the transients whose extent the caller cannot evaluate (:class:`RuntimeSizedScratch`)."""
+    known, ranges = set(symbols), loop_ranges(sdfg)
+    refused: dict[str, str] = {}
     for name in scratch_arrays(sdfg):
         desc = sdfg.arrays[name]
         shape = []
         for dim in desc.shape:
-            extent = sympy.sympify(dim)
-            for level in range(len(ranges) + 1):  # a bound may itself name an outer loop's variable
-                loop_vars = [s for s in extent.free_symbols if str(s) in ranges]
-                if not loop_vars:
-                    break
-                for var in loop_vars:
-                    lo, hi = ranges[str(var)]
-                    extent = sympy.Max(extent.subs(var, lo), extent.subs(var, hi))  # monotone in var
-            extent = simplify_as_sizes(extent)
+            extent = widest(dim, ranges)
             unknown = sorted(str(s) for s in extent.free_symbols if str(s) not in known)
             if unknown:
-                raise UnsupportedNest(f"scratch buffer {name!r} has extent {dim}, which depends on {unknown}")
+                refused.setdefault(name, f"scratch buffer {name!r} has extent {dim}, which depends on {unknown}")
             shape.append(extent)
-        if shape != list(desc.shape):
+        if name not in refused and shape != list(desc.shape):
             sdfg.arrays[name] = dt.Array(desc.dtype, shape, transient=True, storage=desc.storage)
+    if refused:
+        raise RuntimeSizedScratch("; ".join(refused.values()), tuple(refused))
 
 
 # emission of a lowered SDFG
@@ -1251,10 +1275,11 @@ def hoist_nested_scratch(sdfg: dace.SDFG) -> None:
                 sdfg.arrays[fresh] = copy.deepcopy(nested.arrays[fresh])
 
 
-def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG) -> list[str]:
-    """Array arguments in signature order: inputs, further outputs, then scratch, since a kernel allocates nothing."""
+def kernel_arrays(boundary: Boundary, sdfg: dace.SDFG, scratch: bool = True) -> list[str]:
+    """Array arguments in signature order: inputs, further outputs, then scratch, since a kernel allocates nothing;
+    without ``scratch`` for a kernel that allocates its own (:class:`RuntimeSizedScratch`)."""
     names = list(boundary.inputs) + [o for o in boundary.outputs if o not in boundary.inputs]
-    return names + [s for s in scratch_arrays(sdfg) if s not in names]
+    return names + [s for s in scratch_arrays(sdfg) if s not in names] if scratch else names
 
 
 def kernel_args(boundary: Boundary, arrays: list[str]) -> list[str]:

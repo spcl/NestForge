@@ -25,7 +25,7 @@ from dace.transformation.passes.offloading.offload_to_accelerator import Offload
 from tactics.ir.depends import KernelGraph
 from tactics.stages.canonicalize import Targets
 from tactics.stages.expand import is_device_implementation, is_host_implementation
-from tactics.stages.scopes import is_parallel_kernel
+from tactics.stages.scopes import is_parallel_kernel, kernel_runtime_sized
 
 DEVICES = ("cpu", "gpu")
 
@@ -101,13 +101,14 @@ def pinned_implementations(ext: ExternalCall) -> list[str]:
 
 def default_device(ext: ExternalCall, targets: Targets) -> str:
     """A kernel holding a call pinned to a device library on the GPU, one pinned to a host library on the CPU;
-    otherwise parallel kernels (doalls, library calls among them) on the GPU when it is a target."""
+    otherwise parallel kernels (doalls, library calls among them) on the GPU when it is a target, except one that
+    sizes a temporary while it runs (:func:`kernel_runtime_sized`): a GPU kernel cannot allocate it."""
     pinned = pinned_implementations(ext)
     if targets.gpu and any(is_device_implementation(i) for i in pinned):
         return "gpu"
     if any(is_host_implementation(i) for i in pinned):
         return "cpu"
-    return "gpu" if targets.gpu and is_parallel_kernel(ext) else "cpu"
+    return "gpu" if targets.gpu and is_parallel_kernel(ext) and not kernel_runtime_sized(ext) else "cpu"
 
 
 def default_devices(sdfg: dace.SDFG, targets: Targets) -> dict[str, str]:
@@ -178,6 +179,18 @@ def check_devices(sdfg: dace.SDFG, targets: Targets, devices: dict[str, str]) ->
         return f"{', '.join(bad)}: a device is 'cpu' or 'gpu'."
     if not targets.gpu and "gpu" in devices.values():
         return "the GPU is not a target of this session; every kernel runs on the CPU."
+    return runtime_sized_on_gpu(sdfg, devices)
+
+
+def runtime_sized_on_gpu(sdfg: dace.SDFG, devices: dict[str, str]) -> str | None:
+    """Why a kernel ``devices`` puts on the GPU cannot run there: it sizes a temporary while it runs; or ``None``."""
+    for ext in external_calls(sdfg):
+        sized = kernel_runtime_sized(ext) if devices.get(ext.name) == "gpu" else ()
+        if sized:
+            return (
+                f"{ext.name} sizes {', '.join(sized)} while it runs, which a GPU kernel cannot allocate; "
+                f"place it on the cpu."
+            )
     return None
 
 

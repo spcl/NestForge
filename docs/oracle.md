@@ -32,7 +32,10 @@ is made positive definite (`make_inputs`), so both sides of the comparison facto
 ## Contract
 
 - **Caller allocates.** Inputs, outputs and scratch arrays are buffer parameters written in place; only scalars
-  are locals. A scratch buffer is sized at its loop's extreme value, as a function of size symbols only.
+  are locals. A scratch buffer is sized at its loop's extreme value, as a function of size symbols only. One sized
+  by a value the kernel reads or computes while it runs (`lavamd`'s `neighbor_counts[l]`) has no caller that can
+  size it: the kernel has no oracle and allocates it itself, stage 3 flags it (`KernelScope.runtime_sized`), the whole
+  program checks it, and it stays on the CPU.
 - **Python tasklets only.** A tasklet in another language is refused, never translated.
 - **Loud refusals.** A construct the emitter does not model raises `UnsupportedNest`; it never emits wrong code.
 - **One signature.** The function's parameters are the kernel's `extern "C"` arguments, in order.

@@ -58,7 +58,7 @@ from tactics.build.pipelines import (
 )
 from tactics.build.sdfg import PERSISTENT_MIN_BYTES, force_register_arrays, make_persistent
 from tactics.build.toolchain import SymbolValue, parse_params, raw_signature
-from tactics.corpus.translate import Prepared, prepare
+from tactics.corpus.translate import Prepared, prepare, runtime_sized_scratch
 from tactics.ir.comm import Skeleton, comm_class, isolation_refusal, skeleton, skeleton_difference
 from tactics.ir.dace_types import strings
 from tactics.ir.depends import KernelGraph, UnsupportedProgram, kernel_dependencies
@@ -600,6 +600,9 @@ class KernelScope(Record):
     writes: tuple[str, ...]
     symbols: tuple[str, ...]
     parallel: bool
+    #: Temporaries the kernel sizes while it runs: it allocates them itself, has no NumPy oracle (the whole program
+    #: checks it) and stays on the CPU.
+    runtime_sized: tuple[str, ...] = ()
 
 
 class KernelInfo(Record):
@@ -2420,6 +2423,7 @@ class Session:
                 writes=tuple(boundary.outputs),
                 symbols=tuple(boundary.symbols),
                 parallel=is_parallel_kernel(ext),
+                runtime_sized=() if ext.numpy_source else runtime_sized_scratch(boundary),
             )
             for ext, boundary in lowered
         ]
@@ -3087,12 +3091,12 @@ class Session:
         """Build and link a kernel that has no build: stage 5's first configuration, or under ``codegen="sweep"``
         the winner of stage 6's sweep (one swept before for the same source and sizes is relinked, not swept again;
         a sweep without a correct winner falls back to the first configuration, and so does a kernel taking a symbol
-        only the running program computes: its oracle has no value for it)."""
+        only the running program computes, or one without a NumPy oracle: nothing checks its variants)."""
         if self.codegen == "first" or self.pipeline is not None:
             self.first_build(name)
             return
         src = self.default_kernel(name)
-        if computed_symbols(src, self.kernel_sizes(name)):
+        if computed_symbols(src, self.kernel_sizes(name)) or self.prepare_kernel(name).unspelled:
             self.optimize_kernel(name)
             return
         known = self.swept.get(self.sweep_key(name, src))
