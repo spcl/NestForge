@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.4 (2026-11-27)
+
+- hpcagent-bench 1.0.5; the MCP families test stubs the call's post_judge_waiting (f58cc92)
+- doall-fission: refuse a map body that copies out of its own constant (b757625)
+- Flag kernels whose temporaries are sized while they run, instead of refusing the program (#121) (#122) (a6a6bc5)
+- Bench plugin test: without its workspace_bytes the program aborts at the entry's workspace check (dace-extended 1.0.5), no longer a SIGSEGV past the scratch (7b340ae)
+- Require dace-extended 1.0.5 from PyPI; copyright headers on pyproject.toml and ci.yml (70695dd)
+- Require hpcagent-bench 1.0.4 from PyPI: drop the git sources of its main, CI checks out v1.0.4 (53b5722)
+- emit-vs-SDFG across compilers: the scratch folder of a loaded library is removed without failing on NFS's .nfs files (afc49d9)
+- schedule-moves test 6: a triangular nest computes the reference under static, dynamic and guided on four threads (99d4cc6)
+- drop-implied-guard move; set-schedule-cpu refuses threads in a persistent run; persistent kernel tested on a GPU (394d9d8)
+- Shorten the integration job; README and MANIFEST say how the tools are served now (71e6383)
+- species_sedimentation's tests check the canonical form, which splits the column map itself (97e51fc)
+- Pin dace-extended>=1.0.4 (34f0568)
+- cloudsc's scoped is a fixture again; the profile tests register the judge's tools over MCP themselves (d5ca3f1)
+- Serve the tactics tools over [judge_mcp]; prune the slowest CI tests (b299b5f)
+- CI green on dace-extended 1.0.3; drop the bench-tip job (0fecbf3)
+
 ## 0.1.3 (2026-11-26)
 
 - CI: run tactics as a bench user plugin (4a16e6b)
