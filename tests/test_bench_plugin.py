@@ -1471,7 +1471,8 @@ def test_a_profile_of_a_program_with_scratch_runs_only_with_the_library_s_worksp
     without = client.profile(Submission(language=Language.CPP, library=library), kernel, tool="none", size=Preset.S)
 
     assert sut.root.exit_code == 0 and sut.root.elapsed_ns, sut
-    assert without.root.exit_code != 0 and "SIGSEGV" in without.root.stderr, without
+    # The entry checks workspace_size against its layout and aborts before it touches the scratch
+    assert without.root.exit_code != 0 and "signal SIGABRT" in without.root.stderr, without
 
 
 @pytest.mark.judge
