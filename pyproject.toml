@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the Tactics authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 [build-system]
 requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
@@ -28,7 +30,7 @@ dependencies = [
     # DaCe's einsum of three or more operands imports it, but DaCe lists it only under its testing extras.
     "opt-einsum>=3.0",
     # DaCe extended (import dace), released from the ThrudPrimrose/dace fork; never also install spcl's PyPI `dace`.
-    "dace-extended>=1.0.4",
+    "dace-extended>=1.0.5",
     "dace-relayout>=0.1.2",
     # tactics.mcp_server: the tools as an MCP server (the low-level Server of the 2.x SDK).
     "mcp>=2.3",

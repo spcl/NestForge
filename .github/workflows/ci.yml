@@ -1,3 +1,5 @@
+# Copyright 2021 ETH Zurich and the Tactics authors.
+# SPDX-License-Identifier: GPL-3.0-or-later
 name: CI
 
 # uv installs from pyproject.toml: hpcagent-bench, DaCe extended, dace-relayout and FP-Arena come from PyPI.
