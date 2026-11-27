@@ -1779,6 +1779,14 @@ class Session:
             self.unplaced, self.sources, self.builds, self.measured = None, {}, {}, None
             return self.recorded(MoveResult(status=MoveStatus.APPLIED, kind=move.kind, labels=names, reason=move.text))
 
+    def in_persistent_run(self, scope: str | None, state: object, body: dace.SDFG) -> bool:
+        """Whether ``state`` of kernel ``scope``'s ``body`` lies in a block that runs as the kernel's persistent run."""
+        blocks = {block for kernel, block in self.persistent if kernel == scope}
+        block = state
+        while isinstance(block, ControlFlowBlock) and block.parent_graph is not body:
+            block = block.parent_graph
+        return isinstance(block, ControlFlowBlock) and block.label in blocks
+
     def make_persistent(self, names: tuple[str, ...], scope: str | None) -> MoveResult:
         """Run the rows ``names`` of kernel ``scope`` (for loops, states, doalls for their states; consecutive in one
         region) as one persistent kernel from now on; refused, before anything changes, when MegakernelLoops fuses
@@ -2143,6 +2151,7 @@ class Session:
             container=container,
             depth=depth,
             at=at,
+            in_persistent=kind == SET_SCHEDULE_CPU and self.in_persistent_run(scope, rows[0][1], target),
         )
         if kind == SET_IMPLEMENTATION and isinstance(plan, Rewrite):
             node, state = cast(nodes.LibraryNode, rows[0][0]), rows[0][1]

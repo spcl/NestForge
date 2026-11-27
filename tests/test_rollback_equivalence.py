@@ -46,6 +46,7 @@ OWN_CASES = {
     "stage-loads-shared": "test_rollback_after_a_scope_move",
     "vectorize-doall": "test_rollback_after_vectorizing_a_doall",
     "persistent-kernel": "test_rollback_after_a_persistent_kernel",
+    "drop-implied-guard": "test_rollback_after_drop_implied_guard",
     "set-fp-mode": "test_rollback_after_set_fp_mode",
     "copy-to-tma": "test_rollback_after_copy_to_tma",
     "set-pipeline-depth": "test_rollback_after_set_pipeline_depth",
@@ -196,6 +197,15 @@ def differs_after_rollback(session: Session, apply: Callable[[], MoveResult]) ->
     session.apply_move(ROLLBACK, [])
     parts = ("SDFG", "row labels", "tree text", "kernels")
     return ", ".join(part for part, a, b in zip(parts, before, state_of(session), strict=True) if a != b)
+
+
+def test_rollback_after_drop_implied_guard(tmp_path: Path) -> None:
+    """The guard reads a count only the canonical form makes, so the sweep before canonicalization never lists it."""
+    session = Session(test_session_moves.clip.to_sdfg(simplify=True), work_dir=str(tmp_path))
+    session.canonicalize()
+    (move,) = session.list_moves("drop-implied-guard")
+
+    assert differs_after_rollback(session, lambda: session.apply_move(move.kind, move.labels)) == ""
 
 
 def test_rollback_after_a_persistent_kernel(tmp_path: Path) -> None:

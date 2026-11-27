@@ -74,6 +74,7 @@ from dace.transformation.passes.canonicalize.untile_loops import (
 from dace.transformation.passes.config_propagation import ConfigPropagation
 from dace.transformation.passes.cpu_specialization.interchange_loops_into_lane_maps import inside_a_map, lane_axis_of
 from dace.transformation.passes.dead_dataflow_elimination import DeadDataflowElimination
+from dace.transformation.passes.drop_implied_guards import ImpliedGuard, drop_implied_guard, implied_guards
 from dace.transformation.passes.gpu_specialization.block_tile_kernels import is_kernel
 from dace.transformation.passes.loop_fission import LoopFission
 from dace.transformation.passes.loop_invariant_code_motion import (
@@ -207,6 +208,8 @@ SKEW_WAVEFRONT = "skew-wavefront"
 HOIST_INVARIANT_CODE = "hoist-invariant-code"
 #: The move kind that moves a for loop's or a doall's invariant guard above it: ``if c`` then runs once.
 HOIST_INVARIANT_GUARD = "hoist-invariant-guard"
+#: The move kind that drops a doall's ``count != 0`` guard its own flag already implies (Fortran's early exit).
+DROP_IMPLIED_GUARD = "drop-implied-guard"
 #: The move kind that moves an if into the for loop or doalls it guards, the inverse of :data:`HOIST_INVARIANT_GUARD`.
 SINK_INVARIANT_GUARD = "sink-invariant-guard"
 #: The move kind that moves the statements computing one temporary into the for loop or doall that reads it, the
@@ -248,6 +251,7 @@ MOVE_SHAPES: dict[str, tuple[type | tuple[type, ...], ...]] = {
     HOIST_INVARIANT_CODE: (LOOP_ROW,),
     SINK_INVARIANT_CODE: (LOOP_ROW,),
     HOIST_INVARIANT_GUARD: (LOOP_ROW,),
+    DROP_IMPLIED_GUARD: (nodes.MapEntry,),
     SINK_INVARIANT_GUARD: (ConditionalBlock,),
     VECTORIZE_DOALL: (nodes.MapEntry,),
     LIB_BEFORE: (nodes.CodeNode, ANCHOR_ROW),
@@ -1054,6 +1058,29 @@ def plan_hoist_invariant_guard(row: Row) -> Rewrite | str:
     return plan_map_if(row)
 
 
+def guards_of(entry: nodes.MapEntry, state: SDFGState) -> list[ImpliedGuard]:
+    """The conjuncts of ``entry``'s guards that a flag of the same guard implies (DaCe's ``implied_guards``)."""
+    return [guard for guard in implied_guards(state.sdfg) if guard.guarded is entry]
+
+
+def plan_drop_implied_guard(row: Row) -> Rewrite | str:
+    """``doall i: if count != 0 and flag[i]: S`` -> ``doall i: if flag[i]: S``, where the doall that counted ``count``
+    added at least 1 wherever ``flag`` holds: the count conjunct never changes the outcome."""
+    entry, state = cast(tuple[nodes.MapEntry, SDFGState], row)
+    if not guards_of(entry, state):
+        return Refused(
+            f"{entry.map.label} has no guard conjunct its own flag implies: drop-implied-guard takes a doall guarded by "
+            "a count (count != 0) that a doall before it summed, at least 1 wherever the same guard's flag holds.",
+            Refusal.WRONG_ROW_KIND,
+        )
+
+    def commit() -> None:
+        for guard in guards_of(entry, state):
+            drop_implied_guard(guard)
+
+    return Rewrite("drop_implied_guard", commit)
+
+
 def plan_loop_if(loop_row: Row) -> Rewrite | str:
     """``for i: if c: B`` -> ``if c: for i: B``, for a loop-invariant guard."""
     loop = loop_row[0]
@@ -1701,8 +1728,11 @@ def schedule_text(entry: nodes.MapEntry) -> str:
     return text
 
 
-def plan_set_schedule_cpu(row: Row, schedule: str | None, chunk: int | None, threads: int | None) -> Rewrite | str:
-    """The OpenMP schedule of the outermost doall ``row``, its chunk and its team size (``None``: no clause)."""
+def plan_set_schedule_cpu(
+    row: Row, schedule: str | None, chunk: int | None, threads: int | None, in_persistent: bool = False
+) -> Rewrite | str:
+    """The OpenMP schedule of the outermost doall ``row``, its chunk and its team size (``None``: no clause).
+    ``in_persistent``: the doall runs inside a persistent kernel's team, which sets the team size."""
     entry, state = cast(tuple[nodes.MapEntry, SDFGState], row)
     label = entry.map.label
     if in_parallel_doall(state, entry):
@@ -1722,6 +1752,12 @@ def plan_set_schedule_cpu(row: Row, schedule: str | None, chunk: int | None, thr
         )
     if threads is not None and threads < 1:
         return Refused(f"threads is a positive team size; not {threads}.", Refusal.ARGUMENT)
+    if threads is not None and in_persistent:
+        return Refused(
+            f"{label} runs inside a persistent kernel, whose team runs every doall of it; threads changes nothing there. "
+            "Leave threads out.",
+            Refusal.ARGUMENT,
+        )
 
     def commit() -> None:
         entry.map.omp_schedule = CPU_SCHEDULES[schedule]
@@ -2000,6 +2036,7 @@ PLANNERS: dict[str, Callable[..., Rewrite | str]] = {
     "unroll-doall": plan_unroll_doall,
     HOIST_INVARIANT_CODE: plan_hoist_invariant_code,
     HOIST_INVARIANT_GUARD: plan_hoist_invariant_guard,
+    DROP_IMPLIED_GUARD: plan_drop_implied_guard,
     SINK_INVARIANT_GUARD: plan_sink_invariant_guard,
     LIB_BEFORE: lambda row, target: plan_lib_move(row, target, "before"),
     LIB_AFTER: lambda row, target: plan_lib_move(row, target, "after"),
@@ -2201,6 +2238,14 @@ MOVE_TEXT: dict[str, tuple[str, str]] = {
             "for i: if c: B becomes if c: for i: B, and doall i: if c: B becomes if c: doall i: B, where c reads neither "
             "the loop variable nor what the loop writes; the test runs once. A for loop's if must be its only statement; "
             "a doall that also holds work outside the if is unswitched: if c: doall i: {A; B} else: doall i: A."
+        ),
+    ),
+    DROP_IMPLIED_GUARD: (
+        "drop_implied_guard of DaCe's DropImpliedGuards, on this doall's guards only",
+        (
+            "doall i: if count != 0 and flag[i]: S becomes doall i: if flag[i]: S, where a doall before it added at "
+            "least 1 to count wherever flag[i] holds and nothing negative elsewhere; count is then dead and the two "
+            "doalls can fuse. The early exit (no work when count is 0) goes: a choice for the GPU, not the CPU."
         ),
     ),
     SINK_INVARIANT_GUARD: (
@@ -2420,13 +2465,14 @@ def plan_move(
     container: str | None = None,
     depth: int = PROBE_PIPELINE_DEPTH,
     at: Mapping[str, str] | None = None,
+    in_persistent: bool = False,
 ) -> Rewrite | str:
     """The move ``kind`` makes of ``rows``, or why it is illegal or not implemented; nothing is mutated.
     ``tile_sizes`` goes to the :data:`SIZED` kinds and :data:`SKEW_WAVEFRONT`, ``implementation`` to
     :data:`SET_IMPLEMENTATION`, ``max_iterations`` to the :data:`UNROLLS` kinds; :data:`PROPAGATE_CONFIG`, on no row,
     takes ``config_values`` for ``program`` and writes its variants to ``output_dir``. ``target`` (``cpu`` or ``gpu``)
     is the device the wavefront's tiles are for, ``force`` goes to :data:`FOR_TO_DOALL`, and ``schedule``, ``chunk``
-    and ``threads`` go to :data:`SET_SCHEDULE_CPU`, ``depth`` to :data:`SET_PIPELINE_DEPTH`, ``at`` to
+    and ``threads`` go to :data:`SET_SCHEDULE_CPU` (with ``in_persistent``), ``depth`` to :data:`SET_PIPELINE_DEPTH`, ``at`` to
     :data:`SPLIT_DOALL`."""
     if kind == PROPAGATE_CONFIG:
         assert program is not None and output_dir is not None, "propagate-config is planned on a program"
@@ -2450,7 +2496,9 @@ def plan_move(
     if kind == SPLIT_DOALL:
         return plan_split_doall(rows[0], at=at)
     if kind == SET_SCHEDULE_CPU:
-        return plan_set_schedule_cpu(rows[0], schedule=schedule, chunk=chunk, threads=threads)
+        return plan_set_schedule_cpu(
+            rows[0], schedule=schedule, chunk=chunk, threads=threads, in_persistent=in_persistent
+        )
     if kind in SIZED:
         return PLANNERS[kind](*rows, tile_sizes=tile_sizes)
     if kind == SET_IMPLEMENTATION:
@@ -2680,6 +2728,11 @@ CANDIDATES: dict[str, Callable[[dace.SDFG], Iterator[tuple[Row, ...]]]] = {
         rows for rows in chain(for_rows(sdfg), doall_rows(sdfg)) if sinkable_containers(rows[0])
     ),
     HOIST_INVARIANT_GUARD: lambda sdfg: chain(guarded_loops(sdfg), guarded_doalls(sdfg)),
+    DROP_IMPLIED_GUARD: lambda sdfg: (
+        ((guard.guarded, guard.state),)
+        for owner in sdfg.all_sdfgs_recursive()
+        for guard in {id(g.guarded): g for g in implied_guards(owner)}.values()
+    ),
     SINK_INVARIANT_GUARD: loop_guards,
     VECTORIZE_DOALL: lambda sdfg: (
         ((e, st),)

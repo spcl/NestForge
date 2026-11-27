@@ -1414,3 +1414,50 @@ def test_snapshot_reads_is_not_offered_when_no_other_doall_writes_what_the_doall
     assert sut.list_moves("snapshot-reads") == []
     result = sut.apply_move("snapshot-reads", [top_level_maps(sut.sdfg)[0].map.label])
     assert result.status is MoveStatus.ILLEGAL and "snapshot-reads" in result.reason, result
+
+
+# drop-implied-guard: Fortran's early exit over a count of flags (ICON velocity_tendencies' clip_count)
+
+
+@dace.program
+def clip(z: dace.float64[K, N], lim: dace.float64, flag: dace.bool_[K, N], out: dace.float64[K, N]) -> None:
+    for k in range(K):
+        count = 0
+        for i in range(N):
+            flag[k, i] = abs(z[k, i]) > lim
+            if flag[k, i]:
+                count += 1
+        if count == 0:
+            continue
+        for i in range(N):
+            if flag[k, i]:
+                out[k, i] = z[k, i] * 2.0
+
+
+def test_a_count_guard_its_own_flag_implies_is_dropped_and_the_program_computes_the_same() -> None:
+    sut, _ = session_and_reference(clip)
+    sut.canonicalize()
+    rng = np.random.default_rng(0)
+    z = rng.standard_normal((4, SIZE))
+    z[1] = 0.0  # a row no flag holds in: the early exit's case
+    want = np.zeros_like(z)
+    want[np.abs(z) > 0.5] = z[np.abs(z) > 0.5] * 2.0
+
+    result = apply_listed(sut, "drop-implied-guard")
+
+    assert (result.status, result.reason) == (MoveStatus.APPLIED, "drop_implied_guard"), result
+    assert sut.list_moves("drop-implied-guard") == [], "the guard reads no count any more"
+    out, flag = np.zeros_like(z), np.zeros(z.shape, dtype=bool)
+    sut.sdfg(z=z, lim=0.5, flag=flag, out=out, K=4, N=SIZE)
+    np.testing.assert_array_equal(out, want)
+
+
+def test_a_doall_whose_guard_reads_no_implied_count_is_refused() -> None:
+    sut, _ = session_and_reference(clip)
+    sut.canonicalize()
+    (guarded,) = (move.labels for move in sut.list_moves("drop-implied-guard"))
+    others = [label for label in sut.row_index() if label.startswith("doall") and (label,) != guarded]
+
+    result = sut.apply_move("drop-implied-guard", others[:1])
+
+    assert (result.status, result.refusal) == (MoveStatus.ILLEGAL, Refusal.WRONG_ROW_KIND), result

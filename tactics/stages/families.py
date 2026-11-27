@@ -13,7 +13,13 @@ FAMILIES: dict[str, frozenset[str]] = {
     "shape": frozenset({"flatten-doalls", "unflatten-doall", "doall-to-for", "for-to-doall"}),
     "tiling": frozenset({"tile-doall", "tile-for", "untile-doall", "untile-for"}),
     "hoisting": frozenset(
-        {"hoist-invariant-code", "sink-invariant-code", "hoist-invariant-guard", "sink-invariant-guard"}
+        {
+            "hoist-invariant-code",
+            "sink-invariant-code",
+            "hoist-invariant-guard",
+            "sink-invariant-guard",
+            "drop-implied-guard",
+        }
     ),
     "specialize": frozenset({"propagate-config", "unroll-for", "unroll-doall"}),
     "library": frozenset(

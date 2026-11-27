@@ -675,7 +675,7 @@ def test_a_read_and_a_move_take_no_device_slot_and_what_runs_code_takes_one(stub
 
 
 def test_only_the_finalize_of_a_submission_queues_as_the_submission_does(
-    stub: Stub, monkeypatch: pytest.MonkeyPatch
+    stub: Stub, over_mcp: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     calls: list[str] = []
 

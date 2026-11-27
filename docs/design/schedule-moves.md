@@ -53,12 +53,13 @@ code generator emits the clause. The move sets them on one doall of a scope plac
 
 - `schedule`: `static`, `dynamic`, `guided`, or `default`. `chunk`: a positive integer, optional. `threads`: a
   positive integer, optional.
-- The move changes no value the program computes, except the order in which a floating-point reduction adds, which
-  the benchmark permits or forbids per task. Where it forbids reassociation, a doall with a reduction takes only
-  `static`.
-- Refused where the clause has no effect: a doall inside another parallel doall (it runs sequentially per thread).
-  Not yet refused: a doall in a persistent parallel region or with a private range, for which code generation
-  drops the clause, and `dynamic` on a reduction where the task forbids reassociation.
+- The move changes no value the program computes, except the order in which a floating-point reduction adds. The
+  benchmark grades every output against a reassociation floor (`eps_acc * sqrt(l)`), so every schedule is permitted
+  on a reduction.
+- Refused where the clause has no effect: a doall inside another parallel doall (it runs sequentially per thread);
+  `threads` on a doall of a persistent run, whose team runs it (`#pragma omp for` takes the schedule but no
+  `num_threads`). A doall whose scatter reductions DaCe range-privatizes writes no clause but takes `threads` as
+  its team size in the region it opens itself.
 - `default` leaves the schedule to DaCe, whose `ChooseOmpSchedule` makes it `guided` for uneven bodies.
 - The clause reaches the built kernel: `test_a_cpu_schedule_reaches_the_pragma_of_the_built_kernel` reads the
   kernel's unit after the build (`DecideCpuParallelAxes`, `SplitInvariantMapNests`) and finds the pragma once.

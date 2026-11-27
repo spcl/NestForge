@@ -107,6 +107,7 @@ phase, the summary of the phase it left, then the guide of the phase it reached.
 | a `lib_` row beside doalls on the same arrays | `inline-library`, then fuse |
 | a statement that uses nothing the iterations change (`s = a * b`) | `hoist-invariant-code` |
 | an `if` inside a loop whose condition the loop never changes | `hoist-invariant-guard` |
+| a doall guarded by a count of flags another doall summed (`if count != 0 and flag[i]`) | `drop-implied-guard`, then `doall-fusion` |
 | a temporary computed before a loop that blocks a fusion | `sink-invariant-code` |
 | a loop or doall of a few constant iterations | `unroll-for`, `unroll-doall` |
 | an argument you expect to take one value (`K`, a mode flag) | `propagate-config` |
@@ -167,6 +168,9 @@ DaCe transformation behind each.
 - `hoist-invariant-guard`: `for i: if c: B` becomes `if c: for i: B` for a `c` the loop never changes; a doall with
   other work around the `if` splits into one doall per branch.
 - `sink-invariant-guard` `[if]`: `if c: for i: B` becomes `for i: if c: B`, so the loop can fuse with its neighbors.
+- `drop-implied-guard` `[doall]`: `doall i: if count != 0 and flag[i]: S` becomes `doall i: if flag[i]: S` where a
+  doall before it counted `count` up wherever `flag` holds; `count` is then dead, so the two doalls can fuse. It drops
+  the early exit for `count == 0`: worth it where the fused doall pays (the GPU), not where skipping is cheap.
 
 **Specialization**
 - `propagate-config` `[]` with `config_values` (`{"K": 3}`): the program becomes `if K == 3: <specialized> else:

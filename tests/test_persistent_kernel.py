@@ -9,11 +9,13 @@ from pathlib import Path
 
 import dace
 import numpy as np
+import pytest
 from dace.libraries.standard.nodes.external_call import external_calls
 
 from tactics.records import MoveStatus, Refusal
 from tactics.server import Setup, started_session
 from tactics.session import Session
+from tactics.stages.canonicalize import Targets
 from tactics.stages.performance import Reference
 
 N = dace.symbol("N", dtype=dace.int64)
@@ -97,14 +99,31 @@ def parallel_regions(source: str) -> int:
     return len(re.findall(r"#pragma omp parallel\b", source))
 
 
-def data() -> tuple[dict[str, np.ndarray], Reference]:
-    a = np.linspace(0.0, 1.0, SIZE)
+def data(size: int = SIZE) -> tuple[dict[str, np.ndarray], Reference]:
+    a = np.linspace(0.0, 1.0, size)
     want = a.copy()
     for _ in range(STEPS):
         b = want.copy()
         b[1:-1] = (want[:-2] + want[1:-1] + want[2:]) / 3.0
         want[1:-1] = b[1:-1]
-    return {"a": a, "b": np.zeros(SIZE)}, Reference({"a": want}, 1e-12, 1e-12)
+    return {"a": a, "b": np.zeros(size)}, Reference({"a": want}, 1e-12, 1e-12)
+
+
+def test_a_doall_of_the_persistent_run_takes_a_schedule_but_no_team_size(tmp_path: Path) -> None:
+    """The persistent kernel's team runs its doalls, so code generation writes no num_threads there."""
+    sut, kernel = scoped(tmp_path)
+    ((loop,),) = offered(sut, kernel)
+    sut.apply_move("persistent-kernel", [loop], scope=kernel)
+    first = sut.list_moves("set-schedule-cpu", scope=kernel)[0]
+
+    team = sut.apply_move("set-schedule-cpu", first.labels, scope=kernel, schedule="dynamic", threads=4)
+    scheduled = sut.apply_move("set-schedule-cpu", first.labels, scope=kernel, schedule="dynamic")
+
+    assert (team.status, team.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT), team
+    assert "persistent kernel" in team.reason
+    assert scheduled.status is MoveStatus.APPLIED, scheduled
+    # the worksharing loop inside the team carries the schedule: the generated pragma is the move's product
+    assert sut.default_kernel(kernel).unit.read_text().count("schedule(dynamic)") == 1
 
 
 def test_the_time_loop_runs_in_one_parallel_region_and_computes_the_same(tmp_path: Path) -> None:
@@ -171,6 +190,25 @@ def test_rows_of_two_regions_a_second_run_and_an_unknown_kernel_are_refused(tmp_
     assert (split.status, split.refusal) == (MoveStatus.ILLEGAL, Refusal.WRONG_ROW_KIND)
     assert (unknown.status, unknown.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
     assert (again.status, again.refusal) == (MoveStatus.ILLEGAL, Refusal.ARGUMENT)
+
+
+# 2**20 doalls' iterations exceed the threads a GPU holds at once, so the size test takes the kernel-per-doall path
+@pytest.mark.gpu
+@pytest.mark.parametrize("size", [SIZE, 1 << 20])
+def test_a_persistent_gpu_time_loop_computes_the_reference_on_both_sides_of_its_size_test(
+    tmp_path: Path, size: int
+) -> None:
+    sut = Session(
+        steps.to_sdfg(simplify=True), targets=Targets(gpu=True), work_dir=str(tmp_path), sizes={"N": size, "T": STEPS}
+    )
+    sut.canonicalize()
+    (loop,) = [label for label in sut.row_index() if label.startswith("for")]
+    kernel = sut.set_scope([loop]).reason
+
+    done = sut.apply_move("run-on-gpu-persistent", [kernel])
+
+    assert done.status is MoveStatus.APPLIED, done.reason
+    assert sut.performance(*data(size)).structured.correct is True
 
 
 # Reproducer: megakernel block conflicted with 16x16 thread blocks (#113, jacobi_2d)

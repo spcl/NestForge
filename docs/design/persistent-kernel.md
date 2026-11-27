@@ -12,7 +12,9 @@ on the CPU in one OpenMP team. A kernel holds one persistent run; to change it, 
 move is refused when the rows are not consecutive in one region, or a trial render fuses nothing. A straight run of
 kernels can be slower as one persistent kernel (DaCe measured ICON velocity tendencies 2x slower), so the 3% guard of
 `get_performance` decides by measurement. The tree marks the kernel row `persistent: <blocks>`. Tested on the CPU
-(`tests/test_persistent_kernel.py`); the GPU path needs a GPU run.
+and on the GPU (`tests/test_persistent_kernel.py`; test 5 ran 2026-11-27 on an A100 of ault25 in the bench's
+judge-nvidia image, CUDA 13.4: a time loop of doalls at N=64, the cooperative kernel, and N=2^20, past the size test,
+both exact).
 
 ## Goal
 
@@ -52,10 +54,11 @@ must fit the threads resident on the device at once. That is a trade-off the age
 2. Kernels in a straight line, outside a loop, are not offered.
 3. A loop with a host statement between its kernels is refused with the reason.
 4. CPU `jacobi_2d`: one `omp parallel` around the loop, exact results (local).
-5. GPU `jacobi_2d` at N=64 and N=4096: exact on both sides of the size test (beverin, ask first).
+5. A GPU time loop of doalls at N=64 and N=2^20: exact on both sides of the size test
+   (`test_a_persistent_gpu_time_loop_computes_the_reference_on_both_sides_of_its_size_test`, marked `gpu`; built).
 
 ## Build order
 
 1. DaCe: `mk-1117` on extended, then the bench's DaCe pin, then Tactics'.
 2. The move, its tree text, its refusals, tests 1 to 4.
-3. Test 5 on beverin.
+3. Test 5 on a GPU (built: ault25 A100).
