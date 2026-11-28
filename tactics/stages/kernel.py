@@ -19,6 +19,7 @@ import numpy as np
 from dace import dtypes
 from dace.codegen import cpf
 from dace.codegen.common import get_gpu_backend
+from dace.libraries.sort.nodes.scatter_conflict_check import SCRATCH_CONNECTOR_NAME, ScatterConflictCheck
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from dace.sdfg import nodes
 from dace.sdfg.state import LoopRegion
@@ -458,8 +459,39 @@ class Probe:
         return Expected(self.oracle, self.lengths)
 
 
+def outermost_name(sdfg: dace.SDFG, name: str) -> str:
+    """The container of the top SDFG that ``name`` of nested ``sdfg`` is written into, through each parent's output
+    connector of that name."""
+    while sdfg.parent_nsdfg_node is not None and sdfg.parent is not None:
+        state, node = sdfg.parent, sdfg.parent_nsdfg_node
+        edge = next((e for e in state.out_edges(node) if e.src_conn == name), None)
+        if edge is None:
+            return name
+        name = state.memlet_path(edge)[-1].dst.data
+        sdfg = state.sdfg
+    return name
+
+
+def unspecified_outputs(boundary: Boundary) -> list[str]:
+    """The outputs of ``boundary`` whose values the kernel does not define: the tag scratch a ``ScatterConflictCheck``
+    writes (DaCe: never read before it is written, and it may carry stale values), which no oracle can predict."""
+    names: list[str] = []
+    for node, state in boundary.standalone_sdfg.all_nodes_recursive():
+        if not isinstance(node, ScatterConflictCheck):
+            continue
+        for edge in state.out_edges(node):
+            if edge.src_conn == SCRATCH_CONNECTOR_NAME:
+                name = outermost_name(state.sdfg, state.memlet_path(edge)[-1].dst.data)
+                if name in boundary.outputs and name not in names:
+                    names.append(name)
+    return names
+
+
 def checked_probe(boundary: Boundary, timed: Workload, checked: Workload, oracle: dict[str, np.ndarray]) -> Probe:
-    """A probe compared on ``checked``, with the accumulation length of each output at its sizes."""
+    """A probe compared on ``checked``, with the accumulation length of each output at its sizes. An output whose
+    values the kernel leaves undefined (:func:`unspecified_outputs`) is not compared."""
+    unspecified = unspecified_outputs(boundary)
+    oracle = {name: array for name, array in oracle.items() if name not in unspecified}
     arrays = {**checked.inputs, **oracle}
     lengths = accumulation_lengths(boundary.standalone_sdfg, checked.sizes, arrays, boundary.outputs)
     return Probe(timed, checked, oracle, lengths=lengths)
