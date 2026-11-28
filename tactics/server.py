@@ -399,6 +399,20 @@ def size_rung(preset: str) -> str:
     return str(parse_preset(preset).anchor.text)
 
 
+def session_preset(preset: str) -> str:
+    """The token a session of the judge's resolved ``preset`` starts from: ``resolve_preset`` leaves a fuzzed token
+    as the bare ``fuzzed`` and moves its rung into the ``fuzz.anchor`` override, which a spawned session process does
+    not see, so ``fuzzed`` gets that rung back (``L+fuzz``); every other token is kept. Call it in the judge's
+    process, as the bench reads the rung of a fuzzed run (``hpcagent_bench.harness.service.profile_size``)."""
+    from hpcagent_bench import config
+    from hpcagent_bench.categories import Preset
+    from hpcagent_bench.spec import FUZZ_SUFFIX
+
+    if preset != Preset.FUZZED.text:
+        return preset
+    return f"{config.current().fuzz.anchor.text}+{FUZZ_SUFFIX}"
+
+
 def start(setup: Setup, codegen: Codegen = "sweep") -> tuple[Session, dict[str, np.ndarray], Reference | None]:
     """The canonicalized session of ``setup``'s kernel, and the data its whole program runs on."""
     session = started_session(setup, codegen)

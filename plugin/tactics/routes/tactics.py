@@ -37,7 +37,18 @@ from hpcagent_bench_plugins.tactics.mcp_endpoint import Outcome, mcp_answer
 from hpcagent_bench_plugins.tactics.wire import IDENTITY, MCP_PATH, ROUTE, TOOLS
 
 from tactics.plugin_record import PLUGIN, SCHEMA, episode_record, journal_entry, keep_capped
-from tactics.server import CALLS, CHANGING, MEASURING, POLL_S, Reply, SessionProcess, Setup, applied, move_text
+from tactics.server import (
+    CALLS,
+    CHANGING,
+    MEASURING,
+    POLL_S,
+    Reply,
+    SessionProcess,
+    Setup,
+    applied,
+    move_text,
+    session_preset,
+)
 from tactics.session import Restored, Sweep, TuneResult
 from tactics.stages.families import checked_families, family_of
 from tactics.stages.moves import ROLLBACK, size_argument
@@ -293,9 +304,8 @@ def session_of(
     journal = journal_of(episode_id, kernel)
     gpu = canonical_parallel_form_target() is Target.GPU
     root, families, phases = str(agent_root(episode_id)), episode.families or (), episode.phases or ()
-    setup = Setup(
-        kernel, judge.cfg.preset.text, judge.cfg.datatype, gpu, root, disabled_families=families, agent_phases=phases
-    )
+    preset = session_preset(judge.cfg.preset.text)
+    setup = Setup(kernel, preset, judge.cfg.datatype, gpu, root, disabled_families=families, agent_phases=phases)
     session = SessionProcess(setup)
     for tool, arguments in journal:
         repeated = session.call(tool, arguments, gone, slot=slot, timed=False)

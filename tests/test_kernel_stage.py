@@ -16,6 +16,12 @@ import numpy as np
 import pytest
 from dace.codegen.common import get_gpu_backend
 from dace.frontend.python.parser import DaceProgram
+from dace.libraries.sort.nodes.scatter_conflict_check import (
+    INPUT_CONNECTOR_NAME,
+    OUTPUT_CONNECTOR_NAME,
+    SCRATCH_CONNECTOR_NAME,
+    ScatterConflictCheck,
+)
 from dace.libraries.standard.nodes.external_call import ExternalCall
 from helpers import extern_declaration_and_call
 
@@ -32,12 +38,15 @@ from tactics.stages.kernel import (
     GPU_FORMS,
     KernelSource,
     KernelVerdict,
+    Workload,
     build_kernel_library,
+    checked_probe,
     gpu_schedule,
     kernel_runtime_libraries,
     kernel_text,
     schedule_kernel,
     split_kernel_text,
+    unspecified_outputs,
     use_kernel_library,
     validate_kernel,
 )
@@ -578,3 +587,46 @@ def test_the_cuda_archive_compiles_every_unit_into_one_library(tmp_path: Path, m
 
     assert [cmd[cmd.index("-c") + 1] for cmd in commands] == [str(u) for u in units]
     assert linked == [[tmp_path / "out" / "k.o", tmp_path / "out" / "k_device.o"]]
+
+
+def scatter_check_sdfg(nested: bool) -> dace.SDFG:
+    """A ``ScatterConflictCheck`` writing its flag into ``flag`` and its tag scratch into ``owner``, at the top level
+    or inside a nested SDFG whose connectors carry other names."""
+    inner_names = ("i", "f", "o") if nested else ("idx", "flag", "owner")
+    body = dace.SDFG("check_body" if nested else "check")
+    for name, shape in zip(inner_names, ([dace.symbol("N")], [1], [dace.symbol("M")]), strict=True):
+        body.add_array(name, shape, dace.int64)
+    state = body.add_state("check")
+    node = ScatterConflictCheck("check")
+    node.add_out_connector(SCRATCH_CONNECTOR_NAME)
+    state.add_node(node)
+    idx, flag, owner = inner_names
+    state.add_edge(state.add_read(idx), None, node, INPUT_CONNECTOR_NAME, dace.Memlet(f"{idx}[0:N]"))
+    state.add_edge(node, OUTPUT_CONNECTOR_NAME, state.add_write(flag), None, dace.Memlet(f"{flag}[0]"))
+    state.add_edge(node, SCRATCH_CONNECTOR_NAME, state.add_write(owner), None, dace.Memlet(f"{owner}[0:M]"))
+    if not nested:
+        return body
+    sdfg = dace.SDFG("check")
+    for name, shape in (("idx", [dace.symbol("N")]), ("flag", [1]), ("owner", [dace.symbol("M")])):
+        sdfg.add_array(name, shape, dace.int64)
+    outer = sdfg.add_state("outer")
+    call = outer.add_nested_sdfg(body, inputs={"i"}, outputs={"f", "o"})
+    outer.add_edge(outer.add_read("idx"), None, call, "i", dace.Memlet("idx[0:N]"))
+    outer.add_edge(call, "f", outer.add_write("flag"), None, dace.Memlet("flag[0]"))
+    outer.add_edge(call, "o", outer.add_write("owner"), None, dace.Memlet("owner[0:M]"))
+    return sdfg
+
+
+# Reproducer: a ScatterConflictCheck's tag scratch graded against zeros failed a correct kernel (T48-42, ilu0 CPU)
+@pytest.mark.parametrize("nested", [False, True])
+def test_a_scatter_checks_tag_scratch_is_not_graded(nested: bool) -> None:
+    sdfg = scatter_check_sdfg(nested)
+    boundary = Boundary(
+        inputs=["idx"], outputs=["flag", "owner"], symbols=["N", "M"], nsdfg_node=None, state=None, standalone_sdfg=sdfg
+    )
+    assert unspecified_outputs(boundary) == ["owner"]
+    sizes = {"N": 4, "M": 4}
+    workload = Workload({"idx": np.arange(4, dtype=np.int64)}, sizes)
+    oracle = {"flag": np.zeros(1, dtype=np.int64), "owner": np.zeros(4, dtype=np.int64)}
+    probe = checked_probe(boundary, workload, workload, oracle)
+    assert list(probe.expected.outputs) == ["flag"]
